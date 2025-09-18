@@ -1,5 +1,7 @@
 # ingot
 
+[!](./ingot.png)
+
 ingot is a lean, high-performance archiving tool written in Zig.
 
 It bundles directories and files into a single tar or zip archive at lightning speed, with deterministic output and minimal memory use.

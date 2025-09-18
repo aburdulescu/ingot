@@ -1,6 +1,6 @@
 # ingot
 
-![ingot logo](./ingot.png)
+![ingot logo](./logo.png)
 
 ingot is a lean, high-performance archiving tool written in Zig.
 

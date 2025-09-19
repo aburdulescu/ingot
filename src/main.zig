@@ -16,11 +16,9 @@ pub fn main() !void {
 
     // File Walker
     // - Recursively traverse the input directory.
-    // - Collect file metadata (path, size, permissions).
+    // - Collect file paths.
     // - Apply deterministic rules:
     //   - Sort files lexicographically.
-    //   - Normalize timestamps (e.g., set to epoch 0).
-    //   - Strip or fix user/group IDs.
     // - Pass a clean, ordered list of files downstream.
 
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
@@ -48,6 +46,8 @@ pub fn main() !void {
     var out_buf: [32 * 1024]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&out_buf);
     const out = &out_writer.interface;
+
+    // TODO: collect permissions
 
     var tw = try TarWriter.init(out);
     for (paths.items) |item| {

@@ -48,7 +48,10 @@ pub fn main() !void {
     var out = std.fs.File.stdout();
     var tw = try TarWriter.init(&out);
     for (paths.items) |item| {
-        try tw.append(item);
+        const file = try dir.openFile(item, .{});
+        defer file.close();
+        const stat = try file.stat();
+        try tw.append(item, stat);
     }
 
     // Archive Writer
@@ -110,8 +113,12 @@ const TarWriter = struct {
         };
     }
 
-    fn append(self: *TarWriter, path: []const u8) !void {
+    fn append(self: *TarWriter, path: []const u8, stat: std.fs.File.Stat) !void {
         try self.encode_path(path);
+        try self.encode_size(stat.size);
+
+        // TODO: write ustar header
+        // TODO: write file content
     }
 
     // Based on https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html#tag_20_92_13_03
@@ -129,6 +136,7 @@ const TarWriter = struct {
     // path = pathname of the following file, this shall override the name and prefix fields in the following header block(s)
     // size = size of the file in octets, expressed as a decimal number using digits, this shall override the size field in the following header block(s)
     //
+
     fn encode_path(self: *TarWriter, path: []const u8) !void {
         const known_part = " path=\n";
 
@@ -147,7 +155,23 @@ const TarWriter = struct {
         try out.flush();
     }
 
-    // TODO: encode_size
+    fn encode_size(self: *TarWriter, size: usize) !void {
+        const known_part = " size=\n";
+
+        // used for temporary int->string conversions
+        var str_buf: ToStringBuf = undefined;
+
+        // Construct a string which contains something like "11 size=42\n" where 11 is the size of the string including the size string itself
+        const len = known_part.len + to_string(size, &str_buf).len;
+        var total = to_string(len, &str_buf).len + len;
+        total = to_string(total, &str_buf).len + len;
+
+        var fmt_buf: [str_buf.len + known_part.len + std.fs.max_path_bytes]u8 = undefined;
+        var out_writer = self.out.writer(&fmt_buf);
+        var out = &out_writer.interface;
+        try out.print("{d} size={d}\n", .{ total, size });
+        try out.flush();
+    }
 };
 
 const stringSortFn = struct {

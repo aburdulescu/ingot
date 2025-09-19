@@ -45,10 +45,10 @@ pub fn main() !void {
 
     std.sort.block([]const u8, paths.items, {}, stringSortFn.lessThan);
 
-    var tw = try TarWriter.init(std.fs.File.stdout());
+    var out = std.fs.File.stdout();
+    var tw = try TarWriter.init(&out);
     for (paths.items) |item| {
-        tw.append(item);
-        std.debug.print("{s}\n", .{item});
+        try tw.append(item);
     }
 
     // Archive Writer
@@ -65,20 +65,21 @@ pub fn main() !void {
     // - Ensure clean exit codes and error handling.
 }
 
-// based on https://github.com/rui314/mold/blob/main/lib/tar.cc
+// TODO: based on https://github.com/rui314/mold/blob/main/lib/tar.cc
+//
+// A tar file consists of one or more Ustar header followed by data.
+// Each Ustar header represents a single file in an archive.
+//
+// tar is an old file format, and its `name` field is only 100 bytes long.
+// If `name` is longer than 100 bytes, we can emit a PAX header before a
+// Ustar header to store a long filename.
+//
+// For simplicity, we always emit a PAX header even for a short filename.
 const TarWriter = struct {
     const block_size: i64 = 512;
 
-    out: std.fs.File = undefined,
+    out: *std.fs.File = undefined,
 
-    // A tar file consists of one or more Ustar header followed by data.
-    // Each Ustar header represents a single file in an archive.
-    //
-    // tar is an old file format, and its `name` field is only 100 bytes long.
-    // If `name` is longer than 100 bytes, we can emit a PAX header before a
-    // Ustar header to store a long filename.
-    //
-    // For simplicity, we always emit a PAX header even for a short filename.
     const UstarHeader = struct {
         name: [100]u8 = undefined,
         mode: [8]u8 = undefined,
@@ -103,16 +104,50 @@ const TarWriter = struct {
         assert(@sizeOf(UstarHeader) == block_size);
     }
 
-    fn init(out: std.fs.File) !TarWriter {
+    fn init(out: *std.fs.File) !TarWriter {
         return TarWriter{
             .out = out,
         };
     }
 
-    fn append(self: *TarWriter, path: []const u8) void {
-        _ = self;
-        _ = path;
+    fn append(self: *TarWriter, path: []const u8) !void {
+        try self.encode_path(path);
     }
+
+    // Based on https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html#tag_20_92_13_03
+    //
+    // In short:
+    //
+    // "%d %s=%s\n", <length>, <keyword>, <value>
+    //
+    // <length> = decimal length of the extended header record in octets, including the trailing <newline>
+    // <keyword> = any UTF-8 characters, e.g. path
+    // <value> = based on <keyword>
+    //
+    // we need only path and size keyword:
+    //
+    // path = pathname of the following file, this shall override the name and prefix fields in the following header block(s)
+    // size = size of the file in octets, expressed as a decimal number using digits, this shall override the size field in the following header block(s)
+    //
+    fn encode_path(self: *TarWriter, path: []const u8) !void {
+        const known_part = " path=\n";
+
+        // used for temporary int->string conversions
+        var str_buf: ToStringBuf = undefined;
+
+        // Construct a string which contains something like "16 path=foo/bar\n" where 16 is the size of the string including the size string itself
+        const len = known_part.len + path.len;
+        var total = to_string(len, &str_buf).len + len;
+        total = to_string(total, &str_buf).len + len;
+
+        var fmt_buf: [str_buf.len + known_part.len + std.fs.max_path_bytes]u8 = undefined;
+        var out_writer = self.out.writer(&fmt_buf);
+        var out = &out_writer.interface;
+        try out.print("{d} path={s}\n", .{ total, path });
+        try out.flush();
+    }
+
+    // TODO: encode_size
 };
 
 const stringSortFn = struct {
@@ -120,3 +155,11 @@ const stringSortFn = struct {
         return std.mem.lessThan(u8, a, b);
     }
 };
+
+const ToStringBuf = [20]u8;
+
+fn to_string(num: u64, buf: []u8) []u8 {
+    return std.fmt.bufPrint(buf, "{}", .{num}) catch {
+        @panic("should happend!");
+    };
+}

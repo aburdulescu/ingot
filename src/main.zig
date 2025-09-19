@@ -1,5 +1,5 @@
 const std = @import("std");
-const assert = @import("std.debug.assert");
+const assert = std.debug.assert;
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -29,24 +29,27 @@ pub fn main() !void {
     var walker = try dir.walk(arena);
     defer walker.deinit();
 
-    std.debug.print("max {}\n", .{std.fs.max_path_bytes});
-
-    // use a FixedBufferAllocator for joining paths
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(buf[0..]);
-
-    var max_path_len: usize = 0;
-
+    var paths = std.ArrayListUnmanaged([]const u8){};
     while (try walker.next()) |entry| {
-        const full_path = try std.fs.path.join(fba.allocator(), &[_][]const u8{
-            dir_path, entry.path,
-        });
-        //std.debug.print("{s}\n", .{full_path});
-        if (full_path.len > max_path_len) max_path_len = full_path.len;
-        fba.reset();
+        switch (entry.kind) {
+            .file, .directory => {
+                const path = try arena.dupe(u8, entry.path);
+                try paths.append(arena, path);
+            },
+
+            // TODO: handle symlinks
+
+            else => continue,
+        }
     }
 
-    std.debug.print("max path len: {d}\n", .{max_path_len});
+    std.sort.block([]const u8, paths.items, {}, stringSortFn.lessThan);
+
+    var tw = try TarWriter.init(std.fs.File.stdout());
+    for (paths.items) |item| {
+        tw.append(item);
+        std.debug.print("{s}\n", .{item});
+    }
 
     // Archive Writer
     // - Tar writer (MVP):
@@ -65,6 +68,8 @@ pub fn main() !void {
 // based on https://github.com/rui314/mold/blob/main/lib/tar.cc
 const TarWriter = struct {
     const block_size: i64 = 512;
+
+    out: std.fs.File = undefined,
 
     // A tar file consists of one or more Ustar header followed by data.
     // Each Ustar header represents a single file in an archive.
@@ -95,6 +100,23 @@ const TarWriter = struct {
     };
 
     comptime {
-        assert(@sizeOf(UstarHeader) == block_size + 1);
+        assert(@sizeOf(UstarHeader) == block_size);
+    }
+
+    fn init(out: std.fs.File) !TarWriter {
+        return TarWriter{
+            .out = out,
+        };
+    }
+
+    fn append(self: *TarWriter, path: []const u8) void {
+        _ = self;
+        _ = path;
+    }
+};
+
+const stringSortFn = struct {
+    pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.lessThan(u8, a, b);
     }
 };

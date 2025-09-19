@@ -117,6 +117,7 @@ const TarWriter = struct {
     }
 
     fn append(self: *TarWriter, path: []const u8, stat: std.fs.File.Stat) !void {
+        // TODO: encode pax only when path&size don't fit in ustar? would save space
         try self.encode_path(path);
         try self.encode_size(stat.size);
 

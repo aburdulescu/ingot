@@ -45,8 +45,11 @@ pub fn main() !void {
 
     std.sort.block([]const u8, paths.items, {}, stringSortFn.lessThan);
 
-    var out = std.fs.File.stdout();
-    var tw = try TarWriter.init(&out);
+    var out_buf: [32 * 1024]u8 = undefined;
+    var out_writer = std.fs.File.stdout().writer(&out_buf);
+    const out = &out_writer.interface;
+
+    var tw = try TarWriter.init(out);
     for (paths.items) |item| {
         const file = try dir.openFile(item, .{});
         defer file.close();
@@ -81,7 +84,7 @@ pub fn main() !void {
 const TarWriter = struct {
     const block_size: i64 = 512;
 
-    out: *std.fs.File = undefined,
+    out: *std.Io.Writer = undefined,
 
     const UstarHeader = struct {
         name: [100]u8 = undefined,
@@ -107,7 +110,7 @@ const TarWriter = struct {
         assert(@sizeOf(UstarHeader) == block_size);
     }
 
-    fn init(out: *std.fs.File) !TarWriter {
+    fn init(out: *std.Io.Writer) !TarWriter {
         return TarWriter{
             .out = out,
         };
@@ -148,11 +151,8 @@ const TarWriter = struct {
         var total = to_string(len, &str_buf).len + len;
         total = to_string(total, &str_buf).len + len;
 
-        var fmt_buf: [str_buf.len + known_part.len + std.fs.max_path_bytes]u8 = undefined;
-        var out_writer = self.out.writer(&fmt_buf);
-        var out = &out_writer.interface;
-        try out.print("{d} path={s}\n", .{ total, path });
-        try out.flush();
+        try self.out.print("{d} path={s}\n", .{ total, path });
+        try self.out.flush();
     }
 
     fn encode_size(self: *TarWriter, size: usize) !void {
@@ -166,11 +166,8 @@ const TarWriter = struct {
         var total = to_string(len, &str_buf).len + len;
         total = to_string(total, &str_buf).len + len;
 
-        var fmt_buf: [str_buf.len + known_part.len + std.fs.max_path_bytes]u8 = undefined;
-        var out_writer = self.out.writer(&fmt_buf);
-        var out = &out_writer.interface;
-        try out.print("{d} size={d}\n", .{ total, size });
-        try out.flush();
+        try self.out.print("{d} size={d}\n", .{ total, size });
+        try self.out.flush();
     }
 };
 

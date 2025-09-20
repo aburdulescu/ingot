@@ -21,20 +21,29 @@ pub fn main() !void {
     defer walker.deinit();
 
     // recursively traverse the input directory and collect file and dir paths
-    var paths = std.ArrayListUnmanaged([]const u8){};
+    var paths = try std.ArrayList(Item).initCapacity(arena, 100);
     while (try walker.next()) |entry| {
-        switch (entry.kind) {
-            .file, .directory => {
-                const path = try arena.dupe(u8, entry.path);
-                try paths.append(arena, path);
-            },
+        const kind: Item.Kind = switch (entry.kind) {
+            .file,
+            => .file,
+            .directory => .dir,
             // TODO: handle symlinks
             else => continue,
-        }
+        };
+        const path = try arena.dupe(u8, entry.path);
+        try paths.append(arena, Item{
+            .path = path,
+            .kind = kind,
+        });
     }
 
     // sort paths lexicographically
-    std.sort.block([]const u8, paths.items, {}, stringSortFn.lessThan);
+    const cmp = struct {
+        pub fn lessThan(_: void, a: Item, b: Item) bool {
+            return std.mem.lessThan(u8, a.path, b.path);
+        }
+    }.lessThan;
+    std.sort.block(Item, paths.items, {}, cmp);
 
     var out_buf: [32 * 1024]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&out_buf);
@@ -54,24 +63,30 @@ pub fn main() !void {
     // TODO: ensure clean exit codes and error handling.
 }
 
-const stringSortFn = struct {
-    pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-        return std.mem.lessThan(u8, a, b);
-    }
+const Item = struct {
+    const Kind = enum(u8) {
+        file,
+        dir,
+    };
+
+    path: []const u8,
+    kind: Kind,
 };
 
 const Writer = struct {
-    out: *std.Io.Writer = undefined,
-
+    const version: u16 = 1;
     const magic_string = "ingot";
-    const end_string   = "togni";
+    const end_string = "togni";
+
+    out: *std.Io.Writer = undefined,
+    reader_buf: [32 * 1024]u8 = undefined,
 
     const Header = struct {
-        version: [2]u8 = undefined,
-        type: u8 = undefined,
-        mode: [4]u8 = undefined,
-        path_size: [4]u8 = undefined,
-        file_size: [4]u8 = undefined,
+        version: [2]u8 = .{0} ** 2,
+        type: u8 = 0,
+        mode: [4]u8 = .{0} ** 4,
+        path_size: [4]u8 = .{0} ** 4,
+        file_size: [8]u8 = .{0} ** 8,
         // TODO: checksum?!
     };
 
@@ -84,8 +99,44 @@ const Writer = struct {
         try self.out.flush();
     }
 
-    fn append(self: *Writer, dir: std.fs.Dir, path: []const u8) !void {
-        const file = try dir.openFile(path, .{});
+    fn append(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+        switch (item.kind) {
+            .file => try self.append_file(base_dir, item.path),
+            .dir => try self.append_dir(base_dir, item.path),
+        }
+    }
+
+    fn append_dir(self: *Writer, base_dir: std.fs.Dir, path: []const u8) !void {
+        var dir = try base_dir.openDir(path, .{});
+        defer dir.close();
+
+        const stat = try dir.stat();
+
+        var hdr = Header{};
+
+        // version
+        std.mem.writeInt(u16, &hdr.version, version, .big);
+
+        // type
+        hdr.type = 1;
+
+        // mode
+        const mode: u32 = @intCast(stat.mode);
+        std.mem.writeInt(u32, &hdr.mode, mode & 0o777, .big);
+
+        // path_size
+        const path_size: u32 = @intCast(path.len);
+        std.mem.writeInt(u32, &hdr.path_size, path_size, .big);
+
+        // file_size
+        std.mem.writeInt(u64, &hdr.file_size, 0, .big);
+
+        try self.out.writeAll(std.mem.asBytes(&hdr));
+        try self.out.writeAll(path);
+    }
+
+    fn append_file(self: *Writer, base_dir: std.fs.Dir, path: []const u8) !void {
+        const file = try base_dir.openFile(path, .{});
         defer file.close();
 
         const stat = try file.stat();
@@ -93,36 +144,27 @@ const Writer = struct {
         var hdr = Header{};
 
         // version
-        std.mem.writeInt(u16, &hdr.version, 0, .big);
+        std.mem.writeInt(u16, &hdr.version, version, .big);
 
         // type
-        hdr.type = switch (stat.kind) {
-            .file => 0,
-            .directory => 1,
-            else => unreachable,
-        };
+        hdr.type = 0;
 
         // mode
         const mode: u32 = @intCast(stat.mode);
-        std.mem.writeInt(u32, &hdr.mode, mode, .big);
+        std.mem.writeInt(u32, &hdr.mode, mode & 0o777, .big);
 
         // path_size
         const path_size: u32 = @intCast(path.len);
         std.mem.writeInt(u32, &hdr.path_size, path_size, .big);
 
         // file_size
-        const file_size: u32 = @intCast(stat.size);
-        std.mem.writeInt(u32, &hdr.file_size, file_size, .big);
+        const file_size: u64 = @intCast(stat.size);
+        std.mem.writeInt(u64, &hdr.file_size, file_size, .big);
 
         try self.out.writeAll(std.mem.asBytes(&hdr));
         try self.out.writeAll(path);
 
-        if (stat.kind == .file) {
-            var buf: [32 * 1024]u8 = undefined;
-            var reader = file.reader(&buf);
-            _ = try self.out.sendFileAll(&reader, .unlimited);
-        }
-
-        try self.out.flush();
+        var reader = file.reader(&self.reader_buf);
+        _ = try self.out.sendFileAll(&reader, .unlimited);
     }
 };

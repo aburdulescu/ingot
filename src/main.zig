@@ -24,8 +24,7 @@ pub fn main() !void {
     var paths = try std.ArrayList(Item).initCapacity(arena, 100);
     while (try walker.next()) |entry| {
         const kind: Item.Kind = switch (entry.kind) {
-            .file,
-            => .file,
+            .file => .file,
             .directory => .dir,
             // TODO: handle symlinks
             else => continue,
@@ -83,11 +82,26 @@ const Writer = struct {
 
     const Header = struct {
         version: [2]u8 = .{0} ** 2,
-        type: u8 = 0,
+        kind: u8 = 0,
         mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
         // TODO: checksum?!
+
+        fn write(self: *Header, kind: Item.Kind, mode: u32, path_len: usize, file_len: usize) void {
+            std.mem.writeInt(u16, &self.version, version, .big);
+
+            const kind_int: u8 = @intFromEnum(kind);
+            self.kind = kind_int;
+
+            std.mem.writeInt(u32, &self.mode, mode & 0o777, .big);
+
+            const path_size: u32 = @intCast(path_len);
+            std.mem.writeInt(u32, &self.path_size, path_size, .big);
+
+            const file_size: u32 = @intCast(file_len);
+            std.mem.writeInt(u64, &self.file_size, file_size, .big);
+        }
     };
 
     fn begin(self: *Writer) !void {
@@ -101,68 +115,39 @@ const Writer = struct {
 
     fn append(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
         switch (item.kind) {
-            .file => try self.append_file(base_dir, item.path),
-            .dir => try self.append_dir(base_dir, item.path),
+            .file => try self.append_file(base_dir, item),
+            .dir => try self.append_dir(base_dir, item),
         }
     }
 
-    fn append_dir(self: *Writer, base_dir: std.fs.Dir, path: []const u8) !void {
-        var dir = try base_dir.openDir(path, .{});
+    fn append_dir(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+        var dir = try base_dir.openDir(item.path, .{});
         defer dir.close();
 
         const stat = try dir.stat();
 
-        var hdr = Header{};
-
-        // version
-        std.mem.writeInt(u16, &hdr.version, version, .big);
-
-        // type
-        hdr.type = 1;
-
-        // mode
         const mode: u32 = @intCast(stat.mode);
-        std.mem.writeInt(u32, &hdr.mode, mode & 0o777, .big);
 
-        // path_size
-        const path_size: u32 = @intCast(path.len);
-        std.mem.writeInt(u32, &hdr.path_size, path_size, .big);
-
-        // file_size
-        std.mem.writeInt(u64, &hdr.file_size, 0, .big);
+        var hdr = Header{};
+        hdr.write(.dir, mode, item.path.len, 0);
 
         try self.out.writeAll(std.mem.asBytes(&hdr));
-        try self.out.writeAll(path);
+        try self.out.writeAll(item.path);
     }
 
-    fn append_file(self: *Writer, base_dir: std.fs.Dir, path: []const u8) !void {
-        const file = try base_dir.openFile(path, .{});
+    fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+        const file = try base_dir.openFile(item.path, .{});
         defer file.close();
 
         const stat = try file.stat();
 
-        var hdr = Header{};
-
-        // version
-        std.mem.writeInt(u16, &hdr.version, version, .big);
-
-        // type
-        hdr.type = 0;
-
-        // mode
         const mode: u32 = @intCast(stat.mode);
-        std.mem.writeInt(u32, &hdr.mode, mode & 0o777, .big);
 
-        // path_size
-        const path_size: u32 = @intCast(path.len);
-        std.mem.writeInt(u32, &hdr.path_size, path_size, .big);
-
-        // file_size
-        const file_size: u64 = @intCast(stat.size);
-        std.mem.writeInt(u64, &hdr.file_size, file_size, .big);
+        var hdr = Header{};
+        hdr.write(item.kind, mode, item.path.len, stat.size);
 
         try self.out.writeAll(std.mem.asBytes(&hdr));
-        try self.out.writeAll(path);
+        try self.out.writeAll(item.path);
 
         var reader = file.reader(&self.reader_buf);
         _ = try self.out.sendFileAll(&reader, .unlimited);

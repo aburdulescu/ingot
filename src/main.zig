@@ -72,6 +72,7 @@ const Writer = struct {
         mode: [4]u8 = undefined,
         path_size: [4]u8 = undefined,
         file_size: [4]u8 = undefined,
+        // TODO: checksum?!
     };
 
     fn begin(self: *Writer) !void {

@@ -4,4 +4,6 @@ zig-out/
 
 zig
 
-out.tar
+out
+
+perf.*

@@ -122,12 +122,12 @@ const TarWriter = struct {
         const dir = std.fs.path.dirname(path) orelse "";
 
         if (base.len > ustar_max_filename or dir.len > ustar_max_dirname)
-            try self.encode_path(path);
+            try self.encode_pax_path(path);
 
         const ustar_max_size: usize = 8 * 1024 * 1024 * 1024 - 1;
 
         if (stat.size > ustar_max_size)
-            try self.encode_size(stat.size);
+            try self.encode_pax_size(stat.size);
 
         // TODO: write ustar header
         // TODO: write file content
@@ -149,7 +149,7 @@ const TarWriter = struct {
     // size = size of the file in octets, expressed as a decimal number using digits, this shall override the size field in the following header block(s)
     //
 
-    fn encode_path(self: *TarWriter, path: []const u8) !void {
+    fn encode_pax_path(self: *TarWriter, path: []const u8) !void {
         const known_part = " path=\n";
 
         // used for temporary int->string conversions
@@ -164,7 +164,7 @@ const TarWriter = struct {
         try self.out.flush();
     }
 
-    fn encode_size(self: *TarWriter, size: usize) !void {
+    fn encode_pax_size(self: *TarWriter, size: usize) !void {
         const known_part = " size=\n";
 
         // used for temporary int->string conversions

@@ -73,8 +73,6 @@ pub fn main() !void {
     // - Ensure clean exit codes and error handling.
 }
 
-// TODO: based on https://github.com/rui314/mold/blob/main/lib/tar.cc
-//
 // A tar file consists of one or more Ustar header followed by data.
 // Each Ustar header represents a single file in an archive.
 //
@@ -82,9 +80,12 @@ pub fn main() !void {
 // If `name` is longer than 100 bytes, we can emit a PAX header before a
 // Ustar header to store a long filename.
 //
-// For simplicity, we always emit a PAX header even for a short filename.
+// Similary the file size is limited to ~8GB.
+//
+// For simplicity, we always emit a PAX header even for a short filename or short file size.
+//
 const TarWriter = struct {
-    const block_size: i64 = 512;
+    const block_size: usize = 512;
 
     out: *std.Io.Writer = undefined,
 
@@ -116,12 +117,11 @@ const TarWriter = struct {
         const pax_path = try encode_pax_path(allocator, path);
         const pax_size = try encode_pax_size(allocator, stat.size);
 
+        const pax_content_len = pax_path.len + pax_size.len;
+
         // Write PAX header
         var pax = UstarHeader{};
-        _ = std.fmt.printInt(&pax.size, pax_path.len + pax_size.len, 8, .lower, .{
-            .width = 11,
-            .fill = '0',
-        });
+        _ = std.fmt.printInt(&pax.size, pax_content_len, 8, .lower, .{ .width = 11, .fill = '0' });
         pax.name[0] = '/';
         pax.typeflag[0] = 'x'; // extended header
         finalize(&pax);
@@ -131,11 +131,33 @@ const TarWriter = struct {
         try self.out.writeAll(pax_path);
         try self.out.writeAll(pax_size);
 
-        // TODO: write ustar header + file content
+        const zero_block = [_]u8{0} ** block_size;
+
+        // make sure block alignment is kept => padd with necessary 0s
+        const pax_padding = block_size - pax_content_len % block_size;
+        try self.out.writeAll(zero_block[0..pax_padding]);
+
+        // TODO: read file
+        const data = "dummy";
+
+        // Write USTAR header for the actual file
+        var ustar = UstarHeader{};
+        _ = try std.fmt.bufPrint(&ustar.mode, "0000664", .{}); // TODO: use actual permissions
+        _ = std.fmt.printInt(&ustar.size, data.len, 8, .lower, .{ .width = 11, .fill = '0' });
+        ustar.typeflag[0] = '0'; // TODO: hadrcoded regular file => use actual file type
+        finalize(&ustar);
+        try self.out.writeAll(std.mem.asBytes(&ustar));
+
+        // Write file contents
+        try self.out.writeAll(data);
+
+        // make sure block alignment is kept => padd with necessary 0s
+        const ustar_padding = block_size - data.len % block_size;
+        try self.out.writeAll(zero_block[0..ustar_padding]);
 
         // Two empty blocks at the end
-        const zero_blocks = [_]u8{0} ** (block_size * 2);
-        try self.out.writeAll(&zero_blocks);
+        try self.out.writeAll(&zero_block);
+        try self.out.writeAll(&zero_block);
 
         try self.out.flush();
     }
@@ -158,10 +180,7 @@ const TarWriter = struct {
         for (bytes) |b| sum += b;
 
         // Format checksum as 6-digit octal + NUL + space
-        _ = std.fmt.printInt(&hdr.checksum, sum, 8, .lower, .{
-            .width = 6,
-            .fill = '0',
-        });
+        _ = std.fmt.printInt(&hdr.checksum, sum, 8, .lower, .{ .width = 6, .fill = '0' });
         hdr.checksum[6] = 0; // NUL terminator
         hdr.checksum[7] = ' '; // trailing space
     }

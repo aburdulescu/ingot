@@ -49,7 +49,9 @@ pub fn main() !void {
 
     // TODO: collect permissions
 
-    var tw = try TarWriter.init(out);
+    var tw = TarWriter{
+        .out = out,
+    };
     for (paths.items) |item| {
         const file = try dir.openFile(item, .{});
         defer file.close();
@@ -110,16 +112,22 @@ const TarWriter = struct {
         assert(@sizeOf(UstarHeader) == block_size);
     }
 
-    fn init(out: *std.Io.Writer) !TarWriter {
-        return TarWriter{
-            .out = out,
-        };
-    }
-
     fn append(self: *TarWriter, path: []const u8, stat: std.fs.File.Stat) !void {
-        // TODO: encode pax only when path&size don't fit in ustar? would save space
-        try self.encode_path(path);
-        try self.encode_size(stat.size);
+        // encode pax only when path and size do not fit in the ustar header
+
+        const ustar_max_filename = 100;
+        const ustar_max_dirname = 155;
+
+        const base = std.fs.path.basename(path);
+        const dir = std.fs.path.dirname(path) orelse "";
+
+        if (base.len > ustar_max_filename or dir.len > ustar_max_dirname)
+            try self.encode_path(path);
+
+        const ustar_max_size: usize = 8 * 1024 * 1024 * 1024 - 1;
+
+        if (stat.size > ustar_max_size)
+            try self.encode_size(stat.size);
 
         // TODO: write ustar header
         // TODO: write file content

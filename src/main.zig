@@ -56,7 +56,7 @@ pub fn main() !void {
         const file = try dir.openFile(item, .{});
         defer file.close();
         const stat = try file.stat();
-        try tw.append(item, stat);
+        try tw.append(arena, item, stat);
     }
 
     // Archive Writer
@@ -89,48 +89,81 @@ const TarWriter = struct {
     out: *std.Io.Writer = undefined,
 
     const UstarHeader = struct {
-        name: [100]u8 = undefined,
-        mode: [8]u8 = undefined,
-        uid: [8]u8 = undefined,
-        gid: [8]u8 = undefined,
-        size: [12]u8 = undefined,
-        mtime: [12]u8 = undefined,
-        checksum: [8]u8 = undefined,
-        typeflag: [1]u8 = undefined,
-        linkname: [100]u8 = undefined,
-        magic: [6]u8 = undefined,
-        version: [2]u8 = undefined,
-        uname: [32]u8 = undefined,
-        gname: [32]u8 = undefined,
-        devmajor: [8]u8 = undefined,
-        devminor: [8]u8 = undefined,
-        prefix: [155]u8 = undefined,
-        pad: [12]u8 = undefined,
+        name: [100]u8 = [_]u8{0} ** 100,
+        mode: [8]u8 = [_]u8{0} ** 8,
+        uid: [8]u8 = [_]u8{0} ** 8,
+        gid: [8]u8 = [_]u8{0} ** 8,
+        size: [12]u8 = [_]u8{0} ** 12,
+        mtime: [12]u8 = [_]u8{0} ** 12,
+        checksum: [8]u8 = [_]u8{0} ** 8,
+        typeflag: [1]u8 = [_]u8{0},
+        linkname: [100]u8 = [_]u8{0} ** 100,
+        magic: [6]u8 = [_]u8{0} ** 6,
+        version: [2]u8 = [_]u8{0} ** 2,
+        uname: [32]u8 = [_]u8{0} ** 32,
+        gname: [32]u8 = [_]u8{0} ** 32,
+        devmajor: [8]u8 = [_]u8{0} ** 8,
+        devminor: [8]u8 = [_]u8{0} ** 8,
+        prefix: [155]u8 = [_]u8{0} ** 155,
+        pad: [12]u8 = [_]u8{0} ** 12,
     };
 
     comptime {
         assert(@sizeOf(UstarHeader) == block_size);
     }
 
-    fn append(self: *TarWriter, path: []const u8, stat: std.fs.File.Stat) !void {
-        // encode pax only when path and size do not fit in the ustar header
+    fn append(self: *TarWriter, allocator: std.mem.Allocator, path: []const u8, stat: std.fs.File.Stat) !void {
+        const pax_path = try encode_pax_path(allocator, path);
+        const pax_size = try encode_pax_size(allocator, stat.size);
 
-        const ustar_max_filename = 100;
-        const ustar_max_dirname = 155;
+        // Write PAX header
+        var pax = UstarHeader{};
+        _ = std.fmt.printInt(&pax.size, pax_path.len + pax_size.len, 8, .lower, .{
+            .width = 11,
+            .fill = '0',
+        });
+        pax.name[0] = '/';
+        pax.typeflag[0] = 'x'; // extended header
+        finalize(&pax);
+        try self.out.writeAll(std.mem.asBytes(&pax));
 
-        const base = std.fs.path.basename(path);
-        const dir = std.fs.path.dirname(path) orelse "";
+        // Write the attributes
+        try self.out.writeAll(pax_path);
+        try self.out.writeAll(pax_size);
 
-        if (base.len > ustar_max_filename or dir.len > ustar_max_dirname)
-            try self.encode_pax_path(path);
+        // TODO: write ustar header + file content
 
-        const ustar_max_size: usize = 8 * 1024 * 1024 * 1024 - 1;
+        // Two empty blocks at the end
+        const zero_blocks = [_]u8{0} ** (block_size * 2);
+        try self.out.writeAll(&zero_blocks);
 
-        if (stat.size > ustar_max_size)
-            try self.encode_pax_size(stat.size);
+        try self.out.flush();
+    }
 
-        // TODO: write ustar header
-        // TODO: write file content
+    pub fn finalize(hdr: *UstarHeader) void {
+        // Fill checksum field with spaces
+        @memset(&hdr.checksum, ' ');
+
+        // magic = "ustar\0"
+        hdr.magic[0..5].* = "ustar".*;
+        hdr.magic[5] = 0;
+
+        // version = "00"
+        hdr.version[0] = '0';
+        hdr.version[1] = '0';
+
+        // Compute checksum
+        var sum: usize = 0;
+        const bytes = @as([*]u8, @ptrCast(hdr))[0..block_size];
+        for (bytes) |b| sum += b;
+
+        // Format checksum as 6-digit octal + NUL + space
+        _ = std.fmt.printInt(&hdr.checksum, sum, 8, .lower, .{
+            .width = 6,
+            .fill = '0',
+        });
+        hdr.checksum[6] = 0; // NUL terminator
+        hdr.checksum[7] = ' '; // trailing space
     }
 
     // Based on https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html#tag_20_92_13_03
@@ -149,34 +182,28 @@ const TarWriter = struct {
     // size = size of the file in octets, expressed as a decimal number using digits, this shall override the size field in the following header block(s)
     //
 
-    fn encode_pax_path(self: *TarWriter, path: []const u8) !void {
-        const known_part = " path=\n";
+    fn encode_pax_path(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+        // Build PAX record: "<len> path=<value>\n"
+        const tmp = try std.fmt.allocPrint(allocator, " path={s}\n", .{path});
 
-        // used for temporary int->string conversions
-        var str_buf: ToStringBuf = undefined;
+        const total_len = tmp.len + std.fmt.count("{d}", .{tmp.len});
 
-        // Construct a string which contains something like "16 path=foo/bar\n" where 16 is the size of the string including the size string itself
-        const len = known_part.len + path.len;
-        var total = to_string(len, &str_buf).len + len;
-        total = to_string(total, &str_buf).len + len;
+        // recompute until stable
+        const final = try std.fmt.allocPrint(allocator, "{d} path={s}\n", .{ total_len, path });
 
-        try self.out.print("{d} path={s}\n", .{ total, path });
-        try self.out.flush();
+        return final;
     }
 
-    fn encode_pax_size(self: *TarWriter, size: usize) !void {
-        const known_part = " size=\n";
+    fn encode_pax_size(allocator: std.mem.Allocator, size: usize) ![]u8 {
+        // Build PAX record: "<len> size=<value>\n"
+        const tmp = try std.fmt.allocPrint(allocator, " size={d}\n", .{size});
 
-        // used for temporary int->string conversions
-        var str_buf: ToStringBuf = undefined;
+        const total_len = tmp.len + std.fmt.count("{d}", .{tmp.len});
 
-        // Construct a string which contains something like "11 size=42\n" where 11 is the size of the string including the size string itself
-        const len = known_part.len + to_string(size, &str_buf).len;
-        var total = to_string(len, &str_buf).len + len;
-        total = to_string(total, &str_buf).len + len;
+        // recompute until stable
+        const final = try std.fmt.allocPrint(allocator, "{d} size={d}\n", .{ total_len, size });
 
-        try self.out.print("{d} size={d}\n", .{ total, size });
-        try self.out.flush();
+        return final;
     }
 };
 
@@ -185,11 +212,3 @@ const stringSortFn = struct {
         return std.mem.lessThan(u8, a, b);
     }
 };
-
-const ToStringBuf = [20]u8;
-
-fn to_string(num: u64, buf: []u8) []u8 {
-    return std.fmt.bufPrint(buf, "{}", .{num}) catch {
-        @panic("should happend!");
-    };
-}

@@ -47,17 +47,13 @@ pub fn main() !void {
     var out_writer = std.fs.File.stdout().writer(&out_buf);
     const out = &out_writer.interface;
 
-    // TODO: collect permissions
-
     var tw = TarWriter{
         .out = out,
     };
-    for (paths.items) |item| {
-        const file = try dir.openFile(item, .{});
-        defer file.close();
-        const stat = try file.stat();
-        try tw.append(arena, item, stat);
+    for (paths.items) |path| {
+        try tw.append(arena, dir, path);
     }
+    try tw.close();
 
     // Archive Writer
     // - Tar writer (MVP):
@@ -86,6 +82,7 @@ pub fn main() !void {
 //
 const TarWriter = struct {
     const block_size: usize = 512;
+    const zero_block = [_]u8{0} ** block_size;
 
     out: *std.Io.Writer = undefined,
 
@@ -113,48 +110,76 @@ const TarWriter = struct {
         assert(@sizeOf(UstarHeader) == block_size);
     }
 
-    fn append(self: *TarWriter, allocator: std.mem.Allocator, path: []const u8, stat: std.fs.File.Stat) !void {
+    fn append(self: *TarWriter, allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !void {
+        // TODO: encode size as pax only if > 8GB and only for files not directories
+
+        const file = try dir.openFile(path, .{});
+        defer file.close();
+
+        const stat = try file.stat();
+
         const pax_path = try encode_pax_path(allocator, path);
         const pax_size = try encode_pax_size(allocator, stat.size);
 
-        const pax_content_len = pax_path.len + pax_size.len;
+        const pax_content_len = if (stat.kind == .file) pax_path.len + pax_size.len else pax_path.len;
 
         // Write PAX header
         var pax = UstarHeader{};
         _ = std.fmt.printInt(&pax.size, pax_content_len, 8, .lower, .{ .width = 11, .fill = '0' });
-        pax.name[0] = '/';
+        _ = try std.fmt.bufPrint(&pax.name, "PaxHeaders/dummy", .{});
         pax.typeflag[0] = 'x'; // extended header
+        pax.version[0] = '0';
+        pax.version[1] = '0';
         finalize(&pax);
         try self.out.writeAll(std.mem.asBytes(&pax));
 
         // Write the attributes
         try self.out.writeAll(pax_path);
-        try self.out.writeAll(pax_size);
+        if (stat.kind == .file) try self.out.writeAll(pax_size);
 
-        const zero_block = [_]u8{0} ** block_size;
+        try self.out.flush();
 
         // make sure block alignment is kept => padd with necessary 0s
-        const pax_padding = block_size - pax_content_len % block_size;
-        try self.out.writeAll(zero_block[0..pax_padding]);
-
-        // TODO: read file
-        const data = "dummy";
+        if (pax_content_len % block_size != 0) {
+            const pax_padding = block_size - pax_content_len % block_size;
+            try self.out.writeAll(zero_block[0..pax_padding]);
+        }
 
         // Write USTAR header for the actual file
         var ustar = UstarHeader{};
-        _ = try std.fmt.bufPrint(&ustar.mode, "0000664", .{}); // TODO: use actual permissions
-        _ = std.fmt.printInt(&ustar.size, data.len, 8, .lower, .{ .width = 11, .fill = '0' });
-        ustar.typeflag[0] = '0'; // TODO: hadrcoded regular file => use actual file type
+        _ = std.fmt.printInt(&ustar.mode, stat.mode, 8, .lower, .{ .width = 8, .fill = '0' });
+        if (stat.kind == .file) {
+            _ = std.fmt.printInt(&ustar.size, stat.size, 8, .lower, .{ .width = 11, .fill = '0' });
+        } else {
+            // do nothing for directory, already set to 0
+        }
+        ustar.typeflag[0] = switch (stat.kind) {
+            .file => '0',
+            .directory => '5',
+            else => unreachable,
+        };
         finalize(&ustar);
         try self.out.writeAll(std.mem.asBytes(&ustar));
 
+        try self.out.flush();
+
         // Write file contents
-        try self.out.writeAll(data);
+        if (stat.kind == .file) {
+            var buf: [32 * 1024]u8 = undefined;
+            var reader = file.reader(&buf);
+            _ = try self.out.sendFileAll(&reader, .unlimited);
+        }
 
         // make sure block alignment is kept => padd with necessary 0s
-        const ustar_padding = block_size - data.len % block_size;
-        try self.out.writeAll(zero_block[0..ustar_padding]);
+        if (stat.size % block_size != 0) {
+            const ustar_padding = block_size - stat.size % block_size;
+            try self.out.writeAll(zero_block[0..ustar_padding]);
+        }
 
+        try self.out.flush();
+    }
+
+    fn close(self: *TarWriter) !void {
         // Two empty blocks at the end
         try self.out.writeAll(&zero_block);
         try self.out.writeAll(&zero_block);

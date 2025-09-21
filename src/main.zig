@@ -130,6 +130,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
+    // TODO: normalize paths to avoid entropy!
+
     // recursively traverse the input directory and collect file and dir paths
     var paths = try std.ArrayList(Item).initCapacity(allocator, 100);
     while (try walker.next()) |entry| {
@@ -195,7 +197,7 @@ const Format = struct {
     const Header = struct {
         version: u8 = 0,
         kind: u8 = 0,
-        mode: [4]u8 = .{0} ** 4,
+        mode: [4]u8 = .{0} ** 4, // TODO: is this needed? current thinking is a executable file must be preserved, but is it needed for dirs?
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
         // TODO: checksum?
@@ -246,6 +248,7 @@ const Format = struct {
 
         fn end(self: *Writer) !void {
             try self.out.writeAll(end_of_archive);
+            // TODO: add hash of whole archive at the end. For integrity and also to detect non-determinism
             try self.out.flush();
         }
 

@@ -35,7 +35,7 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
-        try cmd_unpack(arena, argv[2]);
+        try cmd_unpack(argv[2]);
     } else {
         std.debug.print("error: unknown command '{s}'\n", .{cmd});
         std.debug.print(usage, .{});
@@ -45,26 +45,37 @@ pub fn main() !u8 {
     return 0;
 }
 
-fn cmd_unpack(allocator: std.mem.Allocator, file_path: []const u8) !void {
-    const file = try std.fs.cwd().openFile(file_path, .{});
-    defer file.close();
+fn cmd_unpack(archive_path: []const u8) !void {
+    const archive = try std.fs.cwd().openFile(archive_path, .{});
+    defer archive.close();
 
-    var reader_buf: [32 * 1024]u8 = undefined;
-    var reader = file.reader(&reader_buf);
+    var reader_buf: [64 * 1024]u8 = undefined;
+    var reader = archive.reader(&reader_buf);
 
-    var magic: [Format.magic_string.len]u8 = undefined;
+    var magic: [Format.magic.len]u8 = undefined;
     {
         const n = try reader.read(&magic);
-        if (n != Format.magic_string.len) @panic("short read");
+        if (n != Format.magic.len) @panic("short read");
     }
     std.debug.print("magic = {s}\n", .{magic});
-    if (!std.mem.eql(u8, &magic, Format.magic_string)) return error.wrong_magic;
+    if (!std.mem.eql(u8, &magic, Format.magic)) return error.wrong_magic;
+
+    const out_dir_path = "out.d";
+    std.fs.cwd().makeDir(out_dir_path) catch |err| if (err != error.PathAlreadyExists) return err;
+    var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
+    defer out_dir.close();
+
+    var writer_buf: [64 * 1024]u8 = undefined;
 
     while (true) {
         var header = Format.Header{};
         {
             const n = try reader.read(std.mem.asBytes(&header));
             if (n != @sizeOf(Format.Header)) @panic("short read");
+        }
+
+        if (std.mem.eql(u8, std.mem.asBytes(&header), Format.end_of_archive)) {
+            break;
         }
 
         const kind = header.get_kind();
@@ -85,14 +96,30 @@ fn cmd_unpack(allocator: std.mem.Allocator, file_path: []const u8) !void {
             if (n != path_size) @panic("short read");
         }
 
-        std.debug.print("path = {s}\n", .{path_buf[0..path_size]});
+        const path = path_buf[0..path_size];
+        std.debug.print("path = {s}\n", .{path});
 
-        if (kind == .dir) continue;
-
-        const buf = try allocator.alloc(u8, file_size);
-        defer allocator.free(buf);
-
-        _ = try reader.read(buf);
+        switch (kind) {
+            .dir => {
+                out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
+                var dir = try out_dir.openDir(path, .{
+                    .iterate = true,
+                });
+                defer dir.close();
+                try dir.chmod(mode);
+            },
+            .file => {
+                var file = try out_dir.createFile(path, .{
+                    .mode = mode,
+                });
+                defer file.close();
+                var writer = file.writer(&writer_buf);
+                var writer_if = &writer.interface;
+                const n = try writer_if.sendFileAll(&reader, .limited64(file_size));
+                assert(n == file_size);
+                try writer_if.flush();
+            },
+        }
     }
 }
 
@@ -109,7 +136,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         const kind: Item.Kind = switch (entry.kind) {
             .file => .file,
             .directory => .dir,
-            // TODO: handle symlinks
+            // TODO: handle symlinks?
             else => continue,
         };
         const path = try allocator.dupe(u8, entry.path);
@@ -127,7 +154,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     }.lessThan;
     std.sort.block(Item, paths.items, {}, cmp);
 
-    var out_buf: [32 * 1024]u8 = undefined;
+    var out_buf: [64 * 1024]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&out_buf);
     const out = &out_writer.interface;
 
@@ -156,24 +183,25 @@ const Item = struct {
 };
 
 const Format = struct {
-    const version: u16 = 1;
-    const magic_string = "ingot";
-    const end_string = "togni";
+    const version: u8 = 1;
+    const magic = "ingot";
 
     comptime {
         assert(@alignOf(Header) == 1);
     }
 
+    const end_of_archive = &[_]u8{0xff} ** @sizeOf(Format.Header);
+
     const Header = struct {
-        version: [2]u8 = .{0} ** 2,
+        version: u8 = 0,
         kind: u8 = 0,
         mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
-        // TODO: checksum?!
+        // TODO: checksum?
 
         fn write(self: *Header, kind: Item.Kind, mode: u32, path_len: usize, file_len: usize) void {
-            std.mem.writeInt(u16, &self.version, version, .big);
+            self.version = version;
 
             const kind_int: u8 = @intFromEnum(kind);
             self.kind = kind_int;
@@ -210,14 +238,14 @@ const Format = struct {
 
     const Writer = struct {
         out: *std.Io.Writer = undefined,
-        reader_buf: [32 * 1024]u8 = undefined,
+        reader_buf: [64 * 1024]u8 = undefined,
 
         fn begin(self: *Writer) !void {
-            try self.out.writeAll(magic_string);
+            try self.out.writeAll(magic);
         }
 
         fn end(self: *Writer) !void {
-            try self.out.writeAll(end_string);
+            try self.out.writeAll(end_of_archive);
             try self.out.flush();
         }
 

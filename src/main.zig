@@ -35,7 +35,7 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
-        try cmd_unpack(argv[2]);
+        try cmd_unpack(arena, argv[2]);
     } else {
         std.debug.print("error: unknown command '{s}'\n", .{cmd});
         std.debug.print(usage, .{});
@@ -45,7 +45,7 @@ pub fn main() !u8 {
     return 0;
 }
 
-fn cmd_unpack(file_path: []const u8) !void {
+fn cmd_unpack(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
 
@@ -60,26 +60,40 @@ fn cmd_unpack(file_path: []const u8) !void {
     std.debug.print("magic = {s}\n", .{magic});
     if (!std.mem.eql(u8, &magic, Format.magic_string)) return error.wrong_magic;
 
-    var header = Format.Header{};
-    {
-        const n = try reader.read(std.mem.asBytes(&header));
-        if (n != @sizeOf(Format.Header)) @panic("short read");
+    while (true) {
+        var header = Format.Header{};
+        {
+            const n = try reader.read(std.mem.asBytes(&header));
+            if (n != @sizeOf(Format.Header)) @panic("short read");
+        }
+
+        const kind = header.get_kind();
+        const mode = header.get_mode();
+        const path_size = header.get_path_size();
+        const file_size = header.get_file_size();
+
+        std.debug.print("kind = {}\n", .{kind});
+        std.debug.print("mode = {}\n", .{mode});
+        std.debug.print("path_size = {}\n", .{path_size});
+        std.debug.print("file_size = {}\n", .{file_size});
+
+        if (path_size > std.fs.max_path_bytes) @panic("path too big");
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        {
+            const n = try reader.read(path_buf[0..path_size]);
+            if (n != path_size) @panic("short read");
+        }
+
+        std.debug.print("path = {s}\n", .{path_buf[0..path_size]});
+
+        if (kind == .dir) continue;
+
+        const buf = try allocator.alloc(u8, file_size);
+        defer allocator.free(buf);
+
+        _ = try reader.read(buf);
     }
-
-    std.debug.print("kind = {}\n", .{header.get_kind()});
-    std.debug.print("mode = {}\n", .{header.get_mode()});
-    std.debug.print("path_size = {}\n", .{header.get_path_size()});
-    std.debug.print("file_size = {}\n", .{header.get_file_size()});
-
-    const path_size = header.get_path_size();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    {
-        const n = try reader.read(path_buf[0..path_size]);
-        if (n != path_size) @panic("short read");
-    }
-
-    std.debug.print("path = {s}\n", .{path_buf[0..path_size]});
 }
 
 fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {

@@ -52,20 +52,34 @@ fn cmd_unpack(file_path: []const u8) !void {
     var reader_buf: [32 * 1024]u8 = undefined;
     var reader = file.reader(&reader_buf);
 
+    var magic: [Format.magic_string.len]u8 = undefined;
     {
-        var magic: [Writer.magic_string.len]u8 = undefined;
         const n = try reader.read(&magic);
-        if (n != Writer.magic_string.len) @panic("short read");
-        std.debug.print("magic = {s}\n", .{magic[0..n]});
-        if (!std.mem.eql(u8, magic[0..n], Writer.magic_string)) return error.wrong_magic;
+        if (n != Format.magic_string.len) @panic("short read");
+    }
+    std.debug.print("magic = {s}\n", .{magic});
+    if (!std.mem.eql(u8, &magic, Format.magic_string)) return error.wrong_magic;
+
+    var header = Format.Header{};
+    {
+        const n = try reader.read(std.mem.asBytes(&header));
+        if (n != @sizeOf(Format.Header)) @panic("short read");
     }
 
+    std.debug.print("kind = {}\n", .{header.get_kind()});
+    std.debug.print("mode = {}\n", .{header.get_mode()});
+    std.debug.print("path_size = {}\n", .{header.get_path_size()});
+    std.debug.print("file_size = {}\n", .{header.get_file_size()});
+
+    const path_size = header.get_path_size();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     {
-        var header = Writer.Header{};
-        const n = try reader.read(std.mem.asBytes(&header));
-        if (n != @sizeOf(Writer.Header)) @panic("short read");
-        std.debug.print("header = {x}\n", .{std.mem.asBytes(&header)});
+        const n = try reader.read(path_buf[0..path_size]);
+        if (n != path_size) @panic("short read");
     }
+
+    std.debug.print("path = {s}\n", .{path_buf[0..path_size]});
 }
 
 fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
@@ -104,7 +118,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     const out = &out_writer.interface;
 
     // write the archive
-    var w = Writer{
+    var w = Format.Writer{
         .out = out,
     };
 
@@ -127,13 +141,10 @@ const Item = struct {
     kind: Kind,
 };
 
-const Writer = struct {
+const Format = struct {
     const version: u16 = 1;
     const magic_string = "ingot";
     const end_string = "togni";
-
-    out: *std.Io.Writer = undefined,
-    reader_buf: [32 * 1024]u8 = undefined,
 
     comptime {
         assert(@alignOf(Header) == 1);
@@ -161,54 +172,79 @@ const Writer = struct {
             const file_size: u32 = @intCast(file_len);
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
         }
+
+        fn get_kind(self: *const Header) Item.Kind {
+            const v: Item.Kind = @enumFromInt(self.kind);
+            return v;
+        }
+
+        fn get_mode(self: *const Header) u32 {
+            const v = std.mem.readInt(u32, &self.mode, .big);
+            return v;
+        }
+
+        fn get_path_size(self: *const Header) u32 {
+            const v = std.mem.readInt(u32, &self.path_size, .big);
+            return v;
+        }
+
+        fn get_file_size(self: *const Header) u64 {
+            const v = std.mem.readInt(u64, &self.file_size, .big);
+            return v;
+        }
     };
 
-    fn begin(self: *Writer) !void {
-        try self.out.writeAll(magic_string);
-    }
+    const Writer = struct {
+        out: *std.Io.Writer = undefined,
+        reader_buf: [32 * 1024]u8 = undefined,
 
-    fn end(self: *Writer) !void {
-        try self.out.writeAll(end_string);
-        try self.out.flush();
-    }
-
-    fn append(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
-        switch (item.kind) {
-            .file => try self.append_file(base_dir, item),
-            .dir => try self.append_dir(base_dir, item),
+        fn begin(self: *Writer) !void {
+            try self.out.writeAll(magic_string);
         }
-    }
 
-    fn append_dir(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
-        var dir = try base_dir.openDir(item.path, .{});
-        defer dir.close();
+        fn end(self: *Writer) !void {
+            try self.out.writeAll(end_string);
+            try self.out.flush();
+        }
 
-        const stat = try dir.stat();
+        fn append(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+            switch (item.kind) {
+                .file => try self.append_file(base_dir, item),
+                .dir => try self.append_dir(base_dir, item),
+            }
+        }
 
-        const mode: u32 = @intCast(stat.mode);
+        fn append_dir(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+            var dir = try base_dir.openDir(item.path, .{});
+            defer dir.close();
 
-        var hdr = Header{};
-        hdr.write(.dir, mode, item.path.len, 0);
+            const stat = try dir.stat();
 
-        try self.out.writeAll(std.mem.asBytes(&hdr));
-        try self.out.writeAll(item.path);
-    }
+            const mode: u32 = @intCast(stat.mode);
 
-    fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
-        const file = try base_dir.openFile(item.path, .{});
-        defer file.close();
+            var hdr = Header{};
+            hdr.write(.dir, mode, item.path.len, 0);
 
-        const stat = try file.stat();
+            try self.out.writeAll(std.mem.asBytes(&hdr));
+            try self.out.writeAll(item.path);
+        }
 
-        const mode: u32 = @intCast(stat.mode);
+        fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+            const file = try base_dir.openFile(item.path, .{});
+            defer file.close();
 
-        var hdr = Header{};
-        hdr.write(item.kind, mode, item.path.len, stat.size);
+            const stat = try file.stat();
 
-        try self.out.writeAll(std.mem.asBytes(&hdr));
-        try self.out.writeAll(item.path);
+            const mode: u32 = @intCast(stat.mode);
 
-        var reader = file.reader(&self.reader_buf);
-        _ = try self.out.sendFileAll(&reader, .unlimited);
-    }
+            var hdr = Header{};
+            hdr.write(item.kind, mode, item.path.len, stat.size);
+
+            try self.out.writeAll(std.mem.asBytes(&hdr));
+            try self.out.writeAll(item.path);
+
+            var reader = file.reader(&self.reader_buf);
+            _ = try self.out.sendFileAll(&reader, .unlimited);
+        }
+    };
 };

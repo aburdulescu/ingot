@@ -1,27 +1,82 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub fn main() !void {
+const usage =
+    \\usage:
+    \\    ingot pack directory
+    \\    ingot unpack file
+    \\
+;
+
+pub fn main() !u8 {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
     const argv = try std.process.argsAlloc(arena);
 
-    var args = argv[1..];
-    if (args.len < 1) return error.directory_not_provided;
+    if (argv.len < 2) {
+        std.debug.print("error: missing command\n", .{});
+        std.debug.print(usage, .{});
+        return 1;
+    }
+    const cmd = argv[1];
 
-    const dir_path = args[0];
-    args = args[1..];
+    if (std.mem.eql(u8, cmd, "pack")) {
+        if (argv.len < 3) {
+            std.debug.print("error: need one argument -> directory not provided\n", .{});
+            std.debug.print(usage, .{});
+            return 1;
+        }
+        try cmd_pack(arena, argv[2]);
+    } else if (std.mem.eql(u8, cmd, "unpack")) {
+        if (argv.len < 3) {
+            std.debug.print("error: need one argument -> file not provided\n", .{});
+            std.debug.print(usage, .{});
+            return 1;
+        }
+        try cmd_unpack(argv[2]);
+    } else {
+        std.debug.print("error: unknown command '{s}'\n", .{cmd});
+        std.debug.print(usage, .{});
+        return 1;
+    }
 
+    return 0;
+}
+
+fn cmd_unpack(file_path: []const u8) !void {
+    const file = try std.fs.cwd().openFile(file_path, .{});
+    defer file.close();
+
+    var reader_buf: [32 * 1024]u8 = undefined;
+    var reader = file.reader(&reader_buf);
+
+    {
+        var magic: [Writer.magic_string.len]u8 = undefined;
+        const n = try reader.read(&magic);
+        if (n != Writer.magic_string.len) @panic("short read");
+        std.debug.print("magic = {s}\n", .{magic[0..n]});
+        if (!std.mem.eql(u8, magic[0..n], Writer.magic_string)) return error.wrong_magic;
+    }
+
+    {
+        var header = Writer.Header{};
+        const n = try reader.read(std.mem.asBytes(&header));
+        if (n != @sizeOf(Writer.Header)) @panic("short read");
+        std.debug.print("header = {x}\n", .{std.mem.asBytes(&header)});
+    }
+}
+
+fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var walker = try dir.walk(arena);
+    var walker = try dir.walk(allocator);
     defer walker.deinit();
 
     // recursively traverse the input directory and collect file and dir paths
-    var paths = try std.ArrayList(Item).initCapacity(arena, 100);
+    var paths = try std.ArrayList(Item).initCapacity(allocator, 100);
     while (try walker.next()) |entry| {
         const kind: Item.Kind = switch (entry.kind) {
             .file => .file,
@@ -29,8 +84,8 @@ pub fn main() !void {
             // TODO: handle symlinks
             else => continue,
         };
-        const path = try arena.dupe(u8, entry.path);
-        try paths.append(arena, Item{
+        const path = try allocator.dupe(u8, entry.path);
+        try paths.append(allocator, Item{
             .path = path,
             .kind = kind,
         });
@@ -79,6 +134,10 @@ const Writer = struct {
 
     out: *std.Io.Writer = undefined,
     reader_buf: [32 * 1024]u8 = undefined,
+
+    comptime {
+        assert(@alignOf(Header) == 1);
+    }
 
     const Header = struct {
         version: [2]u8 = .{0} ** 2,

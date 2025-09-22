@@ -91,7 +91,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
         const path = path_buf[0..path_size];
 
-        std.debug.print("{t} {o} {d} {s}\n", .{kind, mode, file_size, path});
+        std.debug.print("{s}\n", .{path});
 
         switch (kind) {
             .dir => {
@@ -142,7 +142,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         });
     }
 
-    std.debug.print("sorting paths ...\n", .{});
+    // sort
     {
         const cmp = struct {
             pub fn lessThan(_: void, a: Item, b: Item) bool {
@@ -161,10 +161,9 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         .out = out,
     };
 
-    std.debug.print("packing ...\n", .{});
-
     try w.begin();
     for (paths.items) |item| {
+        std.debug.print("{s}\n", .{item.path});
         try w.append(dir, item);
     }
     try w.end();
@@ -268,8 +267,6 @@ const Format = struct {
             var hdr = Header{};
             hdr.write(.dir, mode, item.path.len, 0);
 
-            std.debug.print("{t} {o} {d} {s}\n", .{item.kind, mode, 0, item.path});
-
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
         }
@@ -284,8 +281,6 @@ const Format = struct {
 
             var hdr = Header{};
             hdr.write(item.kind, mode, item.path.len, stat.size);
-
-            std.debug.print("{t} {o} {d} {s}\n", .{item.kind, mode, stat.size, item.path});
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

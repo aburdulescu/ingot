@@ -44,11 +44,13 @@ pub fn main() !u8 {
     return 0;
 }
 
+const io_buf_size = 64 * 1024;
+
 fn cmd_unpack(archive_path: []const u8) !void {
     const archive = try std.fs.cwd().openFile(archive_path, .{});
     defer archive.close();
 
-    var reader_buf: [64 * 1024]u8 = undefined;
+    var reader_buf: [io_buf_size]u8 = undefined;
     var reader = archive.reader(&reader_buf);
 
     var magic: [Format.magic.len]u8 = undefined;
@@ -63,7 +65,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
     defer out_dir.close();
 
-    var writer_buf: [64 * 1024]u8 = undefined;
+    var writer_buf: [io_buf_size]u8 = undefined;
 
     while (true) {
         var header = Format.Header{};
@@ -90,7 +92,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
         const path = path_buf[0..path_size];
 
-        std.debug.print("{s}\n", .{path});
+        //std.debug.print("{s}\n", .{path});
 
         switch (kind) {
             .dir => {
@@ -151,7 +153,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         std.sort.block(Item, paths.items, {}, cmp);
     }
 
-    var out_buf: [64 * 1024]u8 = undefined;
+    var out_buf: [io_buf_size]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&out_buf);
     const out = &out_writer.interface;
 
@@ -162,7 +164,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     try w.begin();
     for (paths.items) |item| {
-        std.debug.print("{s}\n", .{item.path});
+        //std.debug.print("{s}\n", .{item.path});
         try w.append(dir, item);
     }
     try w.end();
@@ -236,7 +238,7 @@ const Format = struct {
 
     const Writer = struct {
         out: *std.Io.Writer = undefined,
-        reader_buf: [64 * 1024]u8 = undefined,
+        reader_buf: [io_buf_size]u8 = undefined,
 
         fn begin(self: *Writer) !void {
             try self.out.writeAll(magic);

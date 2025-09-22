@@ -129,6 +129,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     // TODO: how to avoid dupe and reduce allocs?
 
+    // TODO: idea: keep 2 lists, 1 for dirs one for files => no need to store kind
+
     // recursively traverse the input directory and collect file and dir paths
     var paths = try std.ArrayList(Item).initCapacity(allocator, 100);
     while (try walker.next()) |entry| {
@@ -197,7 +199,7 @@ const Format = struct {
     const Header = struct {
         version: u8 = 0,
         kind: u8 = 0,
-        mode: [4]u8 = .{0} ** 4, // TODO: is this needed? current thinking is a executable file must be preserved, but is it needed for dirs?
+        mode: [4]u8 = .{0} ** 4, // TODO: is this needed? current thinking is a executable file must be preserved, but is it needed for dirs? probably best to not store it
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
         // TODO: checksum?
@@ -288,7 +290,7 @@ const Format = struct {
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
 
-            // TODO: write lz4 content not raw to reduce IO
+            // TODO: write lz4 content not raw to reduce IO? probably not a good idea
             var reader = file.reader(&self.reader_buf);
             _ = try self.out.sendFileAll(&reader, .unlimited);
         }

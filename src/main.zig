@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 const usage =
     \\usage:
     \\    ingot pack directory
-    \\    ingot unpack file
+    \\    ingot unpack file.ingot
     \\
 ;
 
@@ -15,7 +15,6 @@ pub fn main() !u8 {
     const argv = try std.process.argsAlloc(gpa);
 
     if (argv.len < 2) {
-        std.debug.print("error: missing command\n", .{});
         std.debug.print(usage, .{});
         return 1;
     }
@@ -60,7 +59,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
     }
     if (!std.mem.eql(u8, &magic, Format.magic)) return error.wrong_magic;
 
-    const out_dir_path = "out.d";
+    const out_dir_path = std.fs.path.stem(archive_path);
     std.fs.cwd().makeDir(out_dir_path) catch |err| if (err != error.PathAlreadyExists) return err;
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
     defer out_dir.close();
@@ -118,10 +117,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     defer walker.deinit();
 
     // TODO: normalize paths to avoid entropy!
-
     // TODO: how to avoid dupe and reduce allocs?
-
-    // TODO: idea: keep 2 lists, 1 for dirs one for files => no need to store kind
 
     // recursively traverse the input directory and collect file and dir paths
     var dirs = try std.ArrayList(Item).initCapacity(allocator, 100);
@@ -156,8 +152,13 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         std.sort.block(Item, files.items, {}, cmp);
     }
 
+    const out_path = try std.mem.concat(allocator, u8, &[_][]const u8{ std.fs.path.basename(dir_path), "." ++ Format.magic });
+
+    var out_file = try std.fs.cwd().createFile(out_path, .{});
+    defer out_file.close();
+
     var out_buf: [io_buf_size]u8 = undefined;
-    var out_writer = std.fs.File.stdout().writer(&out_buf);
+    var out_writer = out_file.writer(&out_buf);
     const out = &out_writer.interface;
 
     // write the archive
@@ -173,8 +174,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         try w.append_file(dir, item);
     }
     try w.end();
-
-    // TODO: ensure clean exit codes and error handling.
 }
 
 const Item = struct {
@@ -198,7 +197,6 @@ const Format = struct {
         kind: u8 = 0,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
-        // TODO: checksum?
 
         fn write(self: *Header, kind: Kind, path_len: usize, file_len: usize) void {
             self.version = version;
@@ -239,7 +237,6 @@ const Format = struct {
 
         fn end(self: *Writer) !void {
             try self.out.writeAll(end_of_archive);
-            // TODO: add hash of whole archive at the end. For integrity and also to detect non-determinism
             try self.out.flush();
         }
 
@@ -263,7 +260,6 @@ const Format = struct {
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
 
-            // TODO: write lz4 content not raw to reduce IO? probably not a good idea
             var reader = file.reader(&self.reader_buf);
             _ = try self.out.sendFileAll(&reader, .unlimited);
         }

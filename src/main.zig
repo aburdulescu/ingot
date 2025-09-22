@@ -57,7 +57,6 @@ fn cmd_unpack(archive_path: []const u8) !void {
         const n = try reader.read(&magic);
         if (n != Format.magic.len) @panic("short read");
     }
-    std.debug.print("magic = {s}\n", .{magic});
     if (!std.mem.eql(u8, &magic, Format.magic)) return error.wrong_magic;
 
     const out_dir_path = "out.d";
@@ -83,11 +82,6 @@ fn cmd_unpack(archive_path: []const u8) !void {
         const path_size = header.get_path_size();
         const file_size = header.get_file_size();
 
-        std.debug.print("kind = {}\n", .{kind});
-        std.debug.print("mode = {}\n", .{mode});
-        std.debug.print("path_size = {}\n", .{path_size});
-        std.debug.print("file_size = {}\n", .{file_size});
-
         if (path_size > std.fs.max_path_bytes) @panic("path too big");
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -95,9 +89,9 @@ fn cmd_unpack(archive_path: []const u8) !void {
             const n = try reader.read(path_buf[0..path_size]);
             if (n != path_size) @panic("short read");
         }
-
         const path = path_buf[0..path_size];
-        std.debug.print("path = {s}\n", .{path});
+
+        std.debug.print("{t} {o} {d} {s}\n", .{kind, mode, file_size, path});
 
         switch (kind) {
             .dir => {
@@ -149,12 +143,14 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     }
 
     // sort paths lexicographically
-    const cmp = struct {
-        pub fn lessThan(_: void, a: Item, b: Item) bool {
-            return std.mem.lessThan(u8, a.path, b.path);
-        }
-    }.lessThan;
-    std.sort.block(Item, paths.items, {}, cmp);
+    {
+        const cmp = struct {
+            pub fn lessThan(_: void, a: Item, b: Item) bool {
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.lessThan;
+        std.sort.block(Item, paths.items, {}, cmp);
+    }
 
     var out_buf: [64 * 1024]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&out_buf);
@@ -166,8 +162,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     };
 
     try w.begin();
-    for (paths.items) |path| {
-        try w.append(dir, path);
+    for (paths.items) |item| {
+        try w.append(dir, item);
     }
     try w.end();
 
@@ -270,6 +266,8 @@ const Format = struct {
             var hdr = Header{};
             hdr.write(.dir, mode, item.path.len, 0);
 
+            std.debug.print("{t} {o} {d} {s}\n", .{item.kind, mode, 0, item.path});
+
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
         }
@@ -284,6 +282,8 @@ const Format = struct {
 
             var hdr = Header{};
             hdr.write(item.kind, mode, item.path.len, stat.size);
+
+            std.debug.print("{t} {o} {d} {s}\n", .{item.kind, mode, stat.size, item.path});
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

@@ -9,16 +9,12 @@ pub fn build(b: *std.Build) void {
         .ReleaseFast, .ReleaseSmall => true,
     };
 
-    var mod = b.createModule(.{
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .single_threaded = true,
         .strip = strip,
-        .link_libc = true,
-    });
-    mod.addCSourceFiles(.{
-        .files = &[_][]const u8{"lz4.c"},
     });
 
     const exe = b.addExecutable(.{

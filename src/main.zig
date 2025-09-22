@@ -79,7 +79,6 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
 
         const kind = header.get_kind();
-        const mode = header.get_mode();
         const path_size = header.get_path_size();
         const file_size = header.get_file_size();
 
@@ -97,16 +96,9 @@ fn cmd_unpack(archive_path: []const u8) !void {
         switch (kind) {
             .dir => {
                 out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
-                var dir = try out_dir.openDir(path, .{
-                    .iterate = true,
-                });
-                defer dir.close();
-                try dir.chmod(mode);
             },
             .file => {
-                var file = try out_dir.createFile(path, .{
-                    .mode = mode,
-                });
+                var file = try out_dir.createFile(path, .{});
                 defer file.close();
                 var writer = file.writer(&writer_buf);
                 var writer_if = &writer.interface;
@@ -132,19 +124,25 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     // TODO: idea: keep 2 lists, 1 for dirs one for files => no need to store kind
 
     // recursively traverse the input directory and collect file and dir paths
-    var paths = try std.ArrayList(Item).initCapacity(allocator, 100);
+    var dirs = try std.ArrayList(Item).initCapacity(allocator, 100);
+    var files = try std.ArrayList(Item).initCapacity(allocator, 100);
     while (try walker.next()) |entry| {
-        const kind: Item.Kind = switch (entry.kind) {
-            .file => .file,
-            .directory => .dir,
+        switch (entry.kind) {
+            .file => {
+                const path = try allocator.dupe(u8, entry.path);
+                try files.append(allocator, Item{
+                    .path = path,
+                });
+            },
+            .directory => {
+                const path = try allocator.dupe(u8, entry.path);
+                try dirs.append(allocator, Item{
+                    .path = path,
+                });
+            },
             // TODO: handle symlinks?
             else => continue,
-        };
-        const path = try allocator.dupe(u8, entry.path);
-        try paths.append(allocator, Item{
-            .path = path,
-            .kind = kind,
-        });
+        }
     }
 
     // sort
@@ -154,7 +152,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 return std.mem.lessThan(u8, a.path, b.path);
             }
         }.lessThan;
-        std.sort.block(Item, paths.items, {}, cmp);
+        std.sort.block(Item, dirs.items, {}, cmp);
+        std.sort.block(Item, files.items, {}, cmp);
     }
 
     var out_buf: [io_buf_size]u8 = undefined;
@@ -167,9 +166,11 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     };
 
     try w.begin();
-    for (paths.items) |item| {
-        //std.debug.print("{s}\n", .{item.path});
-        try w.append(dir, item);
+    for (dirs.items) |item| {
+        try w.append_dir(item);
+    }
+    for (files.items) |item| {
+        try w.append_file(dir, item);
     }
     try w.end();
 
@@ -177,13 +178,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 }
 
 const Item = struct {
-    const Kind = enum(u8) {
-        file,
-        dir,
-    };
-
     path: []const u8,
-    kind: Kind,
 };
 
 const Format = struct {
@@ -196,21 +191,20 @@ const Format = struct {
 
     const end_of_archive = &[_]u8{0xff} ** @sizeOf(Format.Header);
 
+    const Kind = enum { file, dir };
+
     const Header = struct {
         version: u8 = 0,
         kind: u8 = 0,
-        mode: [4]u8 = .{0} ** 4, // TODO: is this needed? current thinking is a executable file must be preserved, but is it needed for dirs? probably best to not store it
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
         // TODO: checksum?
 
-        fn write(self: *Header, kind: Item.Kind, mode: u32, path_len: usize, file_len: usize) void {
+        fn write(self: *Header, kind: Kind, path_len: usize, file_len: usize) void {
             self.version = version;
 
             const kind_int: u8 = @intFromEnum(kind);
             self.kind = kind_int;
-
-            std.mem.writeInt(u32, &self.mode, mode & 0o777, .big);
 
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
@@ -219,13 +213,8 @@ const Format = struct {
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
         }
 
-        fn get_kind(self: *const Header) Item.Kind {
-            const v: Item.Kind = @enumFromInt(self.kind);
-            return v;
-        }
-
-        fn get_mode(self: *const Header) u32 {
-            const v = std.mem.readInt(u32, &self.mode, .big);
+        fn get_kind(self: *const Header) Kind {
+            const v: Kind = @enumFromInt(self.kind);
             return v;
         }
 
@@ -254,23 +243,9 @@ const Format = struct {
             try self.out.flush();
         }
 
-        fn append(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
-            switch (item.kind) {
-                .file => try self.append_file(base_dir, item),
-                .dir => try self.append_dir(base_dir, item),
-            }
-        }
-
-        fn append_dir(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
-            var dir = try base_dir.openDir(item.path, .{});
-            defer dir.close();
-
-            const stat = try dir.stat();
-
-            const mode: u32 = @intCast(stat.mode);
-
+        fn append_dir(self: *Writer, item: Item) !void {
             var hdr = Header{};
-            hdr.write(.dir, mode, item.path.len, 0);
+            hdr.write(.dir, item.path.len, 0);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
@@ -282,10 +257,8 @@ const Format = struct {
 
             const stat = try file.stat();
 
-            const mode: u32 = @intCast(stat.mode);
-
             var hdr = Header{};
-            hdr.write(item.kind, mode, item.path.len, stat.size);
+            hdr.write(.file, item.path.len, stat.size);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

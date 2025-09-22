@@ -142,7 +142,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         });
     }
 
-    // sort paths lexicographically
+    std.debug.print("sorting paths ...\n", .{});
     {
         const cmp = struct {
             pub fn lessThan(_: void, a: Item, b: Item) bool {
@@ -160,6 +160,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var w = Format.Writer{
         .out = out,
     };
+
+    std.debug.print("packing ...\n", .{});
 
     try w.begin();
     for (paths.items) |item| {

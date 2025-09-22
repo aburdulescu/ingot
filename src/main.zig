@@ -9,11 +9,10 @@ const usage =
 ;
 
 pub fn main() !u8 {
-    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
+    var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa = gpa_instance.allocator();
 
-    const argv = try std.process.argsAlloc(arena);
+    const argv = try std.process.argsAlloc(gpa);
 
     if (argv.len < 2) {
         std.debug.print("error: missing command\n", .{});
@@ -28,7 +27,7 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
-        try cmd_pack(arena, argv[2]);
+        try cmd_pack(gpa, argv[2]);
     } else if (std.mem.eql(u8, cmd, "unpack")) {
         if (argv.len < 3) {
             std.debug.print("error: need one argument -> file not provided\n", .{});

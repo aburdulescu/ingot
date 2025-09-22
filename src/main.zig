@@ -44,7 +44,7 @@ pub fn main() !u8 {
     return 0;
 }
 
-const io_buf_size = 64 * 1024;
+const io_buf_size = 256 * 1024;
 
 fn cmd_unpack(archive_path: []const u8) !void {
     const archive = try std.fs.cwd().openFile(archive_path, .{});
@@ -126,6 +126,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     defer walker.deinit();
 
     // TODO: normalize paths to avoid entropy!
+
+    // TODO: how to avoid dupe and reduce allocs?
 
     // recursively traverse the input directory and collect file and dir paths
     var paths = try std.ArrayList(Item).initCapacity(allocator, 100);
@@ -286,6 +288,7 @@ const Format = struct {
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
 
+            // TODO: write lz4 content not raw to reduce IO
             var reader = file.reader(&self.reader_buf);
             _ = try self.out.sendFileAll(&reader, .unlimited);
         }

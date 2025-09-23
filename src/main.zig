@@ -5,6 +5,7 @@ const usage =
     \\usage:
     \\    ingot pack directory
     \\    ingot unpack file.ingot
+    \\    ingot diff left.ingot right.ingot
     \\
 ;
 
@@ -34,6 +35,13 @@ pub fn main() !u8 {
             return 1;
         }
         try cmd_unpack(argv[2]);
+    } else if (std.mem.eql(u8, cmd, "diff")) {
+        if (argv.len < 4) {
+            std.debug.print("error: need two arguments -> left and right files\n", .{});
+            std.debug.print(usage, .{});
+            return 1;
+        }
+        try cmd_diff(argv[2], argv[3]);
     } else {
         std.debug.print("error: unknown command '{s}'\n", .{cmd});
         std.debug.print(usage, .{});
@@ -46,6 +54,11 @@ pub fn main() !u8 {
 // TODO: add progress bars for pack and unpack
 
 const io_buf_size = 256 * 1024;
+
+fn cmd_diff(left: []const u8, right: []const u8) !void {
+    _ = left;
+    _ = right;
+}
 
 fn cmd_unpack(archive_path: []const u8) !void {
     const archive = try std.fs.cwd().openFile(archive_path, .{});
@@ -265,7 +278,7 @@ const Format = struct {
         }
 
         fn get_mode(self: *const FileHeader) std.fs.File.Mode {
-            const v = std.mem.readInt(u32, &self.mode, .big);
+            const v: std.fs.File.Mode = @intCast(std.mem.readInt(u32, &self.mode, .big));
             return v;
         }
 

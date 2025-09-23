@@ -73,7 +73,7 @@ fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
     const r_top = try parse_top_header(&r_reader);
 
     if (l_top.ndirs != r_top.ndirs) return error.different_ndirs;
-    if (l_top.nfiles != r_top.nfiles) return error.different_ndirs;
+    if (l_top.nfiles != r_top.nfiles) return error.different_nfiles;
 
     for (0..l_top.ndirs) |i| {
         var l_path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -184,33 +184,36 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    // TODO: how to avoid dupe and reduce allocs?
-    // TODO: normalize(remove redundant . or .., collapse double slashes, etc.) and validate path, right now only replacing \ with /
-
-    // recursively traverse the input directory and collect file and dir paths
     var dirs = try std.ArrayList(Item).initCapacity(allocator, 100);
     var files = try std.ArrayList(Item).initCapacity(allocator, 100);
-    while (try walker.next()) |entry| {
-        switch (entry.kind) {
-            .file => {
-                const path = try allocator.dupe(u8, entry.path);
-                if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
-                try files.append(allocator, Item{
-                    .path = path,
-                });
-            },
-            .directory => {
-                const path = try allocator.dupe(u8, entry.path);
-                if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
-                try dirs.append(allocator, Item{
-                    .path = path,
-                });
-            },
-            // TODO: handle symlinks?
-            else => continue,
+
+    // recursively traverse the input directory and collect file and dir paths
+    {
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+
+        // TODO: how to avoid dupe and reduce allocs?
+        // TODO: normalize(remove redundant . or .., collapse double slashes, etc.) and validate path, right now only replacing \ with /
+
+        while (try walker.next()) |entry| {
+            switch (entry.kind) {
+                .file => {
+                    const path = try allocator.dupe(u8, entry.path);
+                    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
+                    try files.append(allocator, Item{
+                        .path = path,
+                    });
+                },
+                .directory => {
+                    const path = try allocator.dupe(u8, entry.path);
+                    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
+                    try dirs.append(allocator, Item{
+                        .path = path,
+                    });
+                },
+                // TODO: handle symlinks?
+                else => continue,
+            }
         }
     }
 
@@ -312,7 +315,7 @@ const Format = struct {
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
 
-            const file_size: u32 = @intCast(file_len);
+            const file_size: u64 = @intCast(file_len);
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
         }
 

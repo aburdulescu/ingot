@@ -156,7 +156,6 @@ fn cmd_unpack(archive_path: []const u8) !void {
             if (n != @sizeOf(Format.FileHeader)) @panic("short read");
         }
 
-        const mode = h.get_mode();
         const path_size = h.get_path_size();
         const file_size = h.get_file_size();
         if (path_size > std.fs.max_path_bytes) @panic("path too big");
@@ -168,7 +167,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
         const path = path_buf[0..path_size];
 
-        var file = try out_dir.createFile(path, .{ .mode = mode });
+        var file = try out_dir.createFile(path, .{});
         defer file.close();
 
         var writer = file.writer(&writer_buf);
@@ -306,24 +305,15 @@ const Format = struct {
     };
 
     const FileHeader = struct {
-        mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
 
-        fn write(self: *FileHeader, mode: std.fs.File.Mode, path_len: usize, file_len: usize) void {
-            const mode32: u32 = @intCast(mode);
-            std.mem.writeInt(u32, &self.mode, mode32 & 0o777, .big);
-
+        fn write(self: *FileHeader, path_len: usize, file_len: usize) void {
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
 
             const file_size: u32 = @intCast(file_len);
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
-        }
-
-        fn get_mode(self: *const FileHeader) std.fs.File.Mode {
-            const v: std.fs.File.Mode = @intCast(std.mem.readInt(u32, &self.mode, .big));
-            return v;
         }
 
         fn get_path_size(self: *const FileHeader) u32 {
@@ -365,7 +355,7 @@ const Format = struct {
             const stat = try file.stat();
 
             var hdr = FileHeader{};
-            hdr.write(stat.mode, item.path.len, stat.size);
+            hdr.write(item.path.len, stat.size);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

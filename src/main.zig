@@ -78,6 +78,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
 
         const kind = header.get_kind();
+        const mode = header.get_mode();
         const path_size = header.get_path_size();
         const file_size = header.get_file_size();
 
@@ -97,7 +98,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
                 out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
             },
             .file => {
-                var file = try out_dir.createFile(path, .{});
+                var file = try out_dir.createFile(path, .{.mode = mode});
                 defer file.close();
                 var writer = file.writer(&writer_buf);
                 var writer_if = &writer.interface;
@@ -195,14 +196,18 @@ const Format = struct {
     const Header = struct {
         version: u8 = 0,
         kind: u8 = 0,
+        mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
 
-        fn write(self: *Header, kind: Kind, path_len: usize, file_len: usize) void {
+        fn write(self: *Header,  kind: Kind, mode: std.fs.File.Mode, path_len: usize, file_len: usize) void {
             self.version = version;
 
             const kind_int: u8 = @intFromEnum(kind);
             self.kind = kind_int;
+
+            const mode32: u32 = @intCast(mode);
+            std.mem.writeInt(u32, &self.mode, mode32&0o777, .big);
 
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
@@ -213,6 +218,11 @@ const Format = struct {
 
         fn get_kind(self: *const Header) Kind {
             const v: Kind = @enumFromInt(self.kind);
+            return v;
+        }
+
+        fn get_mode(self: *const Header) std.fs.File.Mode {
+            const v = std.mem.readInt(u32, &self.mode, .big);
             return v;
         }
 
@@ -242,7 +252,7 @@ const Format = struct {
 
         fn append_dir(self: *Writer, item: Item) !void {
             var hdr = Header{};
-            hdr.write(.dir, item.path.len, 0);
+            hdr.write(.dir, 0, item.path.len, 0);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
@@ -255,7 +265,7 @@ const Format = struct {
             const stat = try file.stat();
 
             var hdr = Header{};
-            hdr.write(.file, item.path.len, stat.size);
+            hdr.write(.file, stat.mode, item.path.len, stat.size);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

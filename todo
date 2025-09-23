@@ -1,0 +1,10 @@
+* tests
+- tbd
+
+* CI
+- tbd
+
+* archive integrity
+- include a hash of header+content for each entry
+- then hash those hashes+top header to produce archive hash
+- write the archive hash at the end

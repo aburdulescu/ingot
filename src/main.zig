@@ -52,36 +52,32 @@ fn cmd_unpack(archive_path: []const u8) !void {
     var reader_buf: [io_buf_size]u8 = undefined;
     var reader = archive.reader(&reader_buf);
 
-    var magic: [Format.magic.len]u8 = undefined;
+    // read top-level header
+    var header = Format.Header{};
     {
-        const n = try reader.read(&magic);
-        if (n != Format.magic.len) @panic("short read");
+        const n = try reader.read(std.mem.asBytes(&header));
+        if (n != @sizeOf(Format.Header)) @panic("short read");
     }
-    if (!std.mem.eql(u8, &magic, Format.magic)) return error.wrong_magic;
+    if (!std.mem.eql(u8, &header.magic, Format.magic)) return error.wrong_magic;
+    if (header.version != Format.version) return error.version;
+    const ndirs = header.get_ndirs();
+    const nfiles = header.get_nfiles();
 
+    // create output directory
     const out_dir_path = std.fs.path.stem(archive_path);
     std.fs.cwd().makeDir(out_dir_path) catch |err| if (err != error.PathAlreadyExists) return err;
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{});
     defer out_dir.close();
 
-    var writer_buf: [io_buf_size]u8 = undefined;
-
-    while (true) {
-        var header = Format.Header{};
+    // read directories
+    for (0..ndirs) |_| {
+        var h = Format.DirHeader{};
         {
-            const n = try reader.read(std.mem.asBytes(&header));
-            if (n != @sizeOf(Format.Header)) @panic("short read");
+            const n = try reader.read(std.mem.asBytes(&h));
+            if (n != @sizeOf(Format.DirHeader)) @panic("short read");
         }
 
-        if (std.mem.eql(u8, std.mem.asBytes(&header), Format.end_of_archive)) {
-            break;
-        }
-
-        const kind = header.get_kind();
-        const mode = header.get_mode();
-        const path_size = header.get_path_size();
-        const file_size = header.get_file_size();
-
+        const path_size = h.get_path_size();
         if (path_size > std.fs.max_path_bytes) @panic("path too big");
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -91,22 +87,40 @@ fn cmd_unpack(archive_path: []const u8) !void {
         }
         const path = path_buf[0..path_size];
 
-        //std.debug.print("{s}\n", .{path});
+        out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
+    }
 
-        switch (kind) {
-            .dir => {
-                out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
-            },
-            .file => {
-                var file = try out_dir.createFile(path, .{.mode = mode});
-                defer file.close();
-                var writer = file.writer(&writer_buf);
-                var writer_if = &writer.interface;
-                const n = try writer_if.sendFileAll(&reader, .limited64(file_size));
-                assert(n == file_size);
-                try writer_if.flush();
-            },
+    // read files
+    var writer_buf: [io_buf_size]u8 = undefined;
+    for (0..nfiles) |_| {
+        var h = Format.FileHeader{};
+        {
+            const n = try reader.read(std.mem.asBytes(&h));
+            if (n != @sizeOf(Format.FileHeader)) @panic("short read");
         }
+
+        const mode = h.get_mode();
+        const path_size = h.get_path_size();
+        const file_size = h.get_file_size();
+        if (path_size > std.fs.max_path_bytes) @panic("path too big");
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        {
+            const n = try reader.read(path_buf[0..path_size]);
+            if (n != path_size) @panic("short read");
+        }
+        const path = path_buf[0..path_size];
+
+        var file = try out_dir.createFile(path, .{ .mode = mode });
+        defer file.close();
+
+        var writer = file.writer(&writer_buf);
+        var writer_if = &writer.interface;
+
+        const n = try writer_if.sendFileAll(&reader, .limited64(file_size));
+        assert(n == file_size);
+
+        try writer_if.flush();
     }
 }
 
@@ -166,8 +180,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var w = Format.Writer{
         .out = out,
     };
-
-    try w.begin();
+    try w.begin(dirs.items.len, files.items.len);
     for (dirs.items) |item| {
         try w.append_dir(item);
     }
@@ -187,27 +200,60 @@ const Format = struct {
 
     comptime {
         assert(@alignOf(Header) == 1);
+        assert(@alignOf(DirHeader) == 1);
+        assert(@alignOf(FileHeader) == 1);
     }
 
-    const end_of_archive = &[_]u8{0xff} ** @sizeOf(Format.Header);
-
-    const Kind = enum { file, dir };
-
     const Header = struct {
+        magic: [5]u8 = .{0} ** 5,
         version: u8 = 0,
-        kind: u8 = 0,
+        ndirs: [8]u8 = .{0} ** 8,
+        nfiles: [8]u8 = .{0} ** 8,
+
+        fn write(self: *Header, ndirs: usize, nfiles: usize) void {
+            @memcpy(&self.magic, magic);
+            self.version = version;
+
+            const ndirs64: u64 = @intCast(ndirs);
+            std.mem.writeInt(u64, &self.ndirs, ndirs64, .big);
+
+            const nfiles64: u64 = @intCast(nfiles);
+            std.mem.writeInt(u64, &self.nfiles, nfiles64, .big);
+        }
+
+        fn get_ndirs(self: *const Header) u64 {
+            const v = std.mem.readInt(u64, &self.ndirs, .big);
+            return v;
+        }
+
+        fn get_nfiles(self: *const Header) u64 {
+            const v = std.mem.readInt(u64, &self.nfiles, .big);
+            return v;
+        }
+    };
+
+    const DirHeader = struct {
+        path_size: [4]u8 = .{0} ** 4,
+
+        fn write(self: *DirHeader, path_len: usize) void {
+            const path_size: u32 = @intCast(path_len);
+            std.mem.writeInt(u32, &self.path_size, path_size, .big);
+        }
+
+        fn get_path_size(self: *const DirHeader) u32 {
+            const v = std.mem.readInt(u32, &self.path_size, .big);
+            return v;
+        }
+    };
+
+    const FileHeader = struct {
         mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
 
-        fn write(self: *Header,  kind: Kind, mode: std.fs.File.Mode, path_len: usize, file_len: usize) void {
-            self.version = version;
-
-            const kind_int: u8 = @intFromEnum(kind);
-            self.kind = kind_int;
-
+        fn write(self: *FileHeader, mode: std.fs.File.Mode, path_len: usize, file_len: usize) void {
             const mode32: u32 = @intCast(mode);
-            std.mem.writeInt(u32, &self.mode, mode32&0o777, .big);
+            std.mem.writeInt(u32, &self.mode, mode32 & 0o777, .big);
 
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
@@ -216,22 +262,17 @@ const Format = struct {
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
         }
 
-        fn get_kind(self: *const Header) Kind {
-            const v: Kind = @enumFromInt(self.kind);
-            return v;
-        }
-
-        fn get_mode(self: *const Header) std.fs.File.Mode {
+        fn get_mode(self: *const FileHeader) std.fs.File.Mode {
             const v = std.mem.readInt(u32, &self.mode, .big);
             return v;
         }
 
-        fn get_path_size(self: *const Header) u32 {
+        fn get_path_size(self: *const FileHeader) u32 {
             const v = std.mem.readInt(u32, &self.path_size, .big);
             return v;
         }
 
-        fn get_file_size(self: *const Header) u64 {
+        fn get_file_size(self: *const FileHeader) u64 {
             const v = std.mem.readInt(u64, &self.file_size, .big);
             return v;
         }
@@ -241,19 +282,19 @@ const Format = struct {
         out: *std.Io.Writer = undefined,
         reader_buf: [io_buf_size]u8 = undefined,
 
-        fn begin(self: *Writer) !void {
-            try self.out.writeAll(magic);
+        fn begin(self: *Writer, ndirs: usize, nfiles: usize) !void {
+            var hdr = Header{};
+            hdr.write(ndirs, nfiles);
+            try self.out.writeAll(std.mem.asBytes(&hdr));
         }
 
         fn end(self: *Writer) !void {
-            try self.out.writeAll(end_of_archive);
             try self.out.flush();
         }
 
         fn append_dir(self: *Writer, item: Item) !void {
-            var hdr = Header{};
-            hdr.write(.dir, 0, item.path.len, 0);
-
+            var hdr = DirHeader{};
+            hdr.write(item.path.len);
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
         }
@@ -264,8 +305,8 @@ const Format = struct {
 
             const stat = try file.stat();
 
-            var hdr = Header{};
-            hdr.write(.file, stat.mode, item.path.len, stat.size);
+            var hdr = FileHeader{};
+            hdr.write(stat.mode, item.path.len, stat.size);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);

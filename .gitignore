@@ -6,5 +6,9 @@ zig
 
 *.ingot
 
-perf.*
 cg.*
+
+*.perf
+*.ruse
+
+*.tar

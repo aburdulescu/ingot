@@ -43,6 +43,8 @@ pub fn main() !u8 {
     return 0;
 }
 
+// TODO: add progress bars for pack and unpack
+
 const io_buf_size = 256 * 1024;
 
 fn cmd_unpack(archive_path: []const u8) !void {

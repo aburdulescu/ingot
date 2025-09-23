@@ -68,15 +68,49 @@ fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
     var r_reader_buf: [io_buf_size]u8 = undefined;
     var r_reader = r_archive.reader(&r_reader_buf);
 
-    const l_top = try parseTopLevelHeader(&l_reader);
-    const r_top = try parseTopLevelHeader(&r_reader);
+    const l_top = try parse_top_header(&l_reader);
+    const r_top = try parse_top_header(&r_reader);
 
     if (l_top.ndirs != r_top.ndirs) return error.different_ndirs;
     if (l_top.nfiles != r_top.nfiles) return error.different_ndirs;
+
+    for (0..l_top.ndirs) |i| {
+        var l_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const l_path = try parse_dir(&l_reader, &l_path_buf);
+
+        var r_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const r_path = try parse_dir(&r_reader, &r_path_buf);
+
+        if (!std.mem.eql(u8, l_path, r_path)) {
+            std.debug.print("dir #{d}/{d}: want(l): {s}\n", .{ i, l_top.ndirs, l_path });
+            std.debug.print("dir #{d}/{d}: have(r): {s}\n", .{ i, l_top.ndirs, r_path });
+            return error.different_dir_path;
+        }
+    }
+
+    // TODO: files
 }
 
-// parse top-level header
-fn parseTopLevelHeader(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64 } {
+fn parse_dir(reader: *std.fs.File.Reader, path_buf: []u8) ![]const u8 {
+    var h = Format.DirHeader{};
+    {
+        const n = try reader.read(std.mem.asBytes(&h));
+        if (n != @sizeOf(Format.DirHeader)) @panic("short read");
+    }
+
+    const path_size = h.get_path_size();
+    if (path_size > std.fs.max_path_bytes) @panic("path too big");
+
+    // read path
+    {
+        const n = try reader.read(path_buf[0..path_size]);
+        if (n != path_size) @panic("short read");
+    }
+
+    return path_buf[0..path_size];
+}
+
+fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64 } {
     var header = Format.Header{};
     {
         const n = try reader.read(std.mem.asBytes(&header));
@@ -97,7 +131,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
     var reader_buf: [io_buf_size]u8 = undefined;
     var reader = archive.reader(&reader_buf);
 
-    const top = try parseTopLevelHeader(&reader);
+    const top = try parse_top_header(&reader);
 
     // create output directory
     const out_dir_path = std.fs.path.stem(archive_path);
@@ -107,22 +141,8 @@ fn cmd_unpack(archive_path: []const u8) !void {
 
     // read directories
     for (0..top.ndirs) |_| {
-        var h = Format.DirHeader{};
-        {
-            const n = try reader.read(std.mem.asBytes(&h));
-            if (n != @sizeOf(Format.DirHeader)) @panic("short read");
-        }
-
-        const path_size = h.get_path_size();
-        if (path_size > std.fs.max_path_bytes) @panic("path too big");
-
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        {
-            const n = try reader.read(path_buf[0..path_size]);
-            if (n != path_size) @panic("short read");
-        }
-        const path = path_buf[0..path_size];
-
+        const path = try parse_dir(&reader, &path_buf);
         out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
     }
 

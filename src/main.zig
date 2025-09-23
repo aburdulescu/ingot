@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const usage =
@@ -82,8 +83,8 @@ fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
         const r_path = try parse_dir(&r_reader, &r_path_buf);
 
         if (!std.mem.eql(u8, l_path, r_path)) {
-            std.debug.print("dir #{d}/{d}: want(l): {s}\n", .{ i, l_top.ndirs, l_path });
-            std.debug.print("dir #{d}/{d}: have(r): {s}\n", .{ i, l_top.ndirs, r_path });
+            std.debug.print("dir {d}/{d} want(l): {s}\n", .{ i, l_top.ndirs, l_path });
+            std.debug.print("dir {d}/{d} have(r): {s}\n", .{ i, l_top.ndirs, r_path });
             return error.different_dir_path;
         }
     }
@@ -187,8 +188,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    // TODO: normalize paths to avoid entropy!
     // TODO: how to avoid dupe and reduce allocs?
+    // TODO: normalize(remove redundant . or .., collapse double slashes, etc.) and validate path, right now only replacing \ with /
 
     // recursively traverse the input directory and collect file and dir paths
     var dirs = try std.ArrayList(Item).initCapacity(allocator, 100);
@@ -197,12 +198,14 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         switch (entry.kind) {
             .file => {
                 const path = try allocator.dupe(u8, entry.path);
+                if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
                 try files.append(allocator, Item{
                     .path = path,
                 });
             },
             .directory => {
                 const path = try allocator.dupe(u8, entry.path);
+                if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, std.fs.path.sep_windows, std.fs.path.sep_posix);
                 try dirs.append(allocator, Item{
                     .path = path,
                 });

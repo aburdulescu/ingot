@@ -55,9 +55,39 @@ pub fn main() !u8 {
 
 const io_buf_size = 256 * 1024;
 
-fn cmd_diff(left: []const u8, right: []const u8) !void {
-    _ = left;
-    _ = right;
+fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
+    const l_archive = try std.fs.cwd().openFile(left_path, .{});
+    defer l_archive.close();
+
+    const r_archive = try std.fs.cwd().openFile(right_path, .{});
+    defer r_archive.close();
+
+    var l_reader_buf: [io_buf_size]u8 = undefined;
+    var l_reader = l_archive.reader(&l_reader_buf);
+
+    var r_reader_buf: [io_buf_size]u8 = undefined;
+    var r_reader = r_archive.reader(&r_reader_buf);
+
+    const l_top = try parseTopLevelHeader(&l_reader);
+    const r_top = try parseTopLevelHeader(&r_reader);
+
+    if (l_top.ndirs != r_top.ndirs) return error.different_ndirs;
+    if (l_top.nfiles != r_top.nfiles) return error.different_ndirs;
+}
+
+// parse top-level header
+fn parseTopLevelHeader(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64 } {
+    var header = Format.Header{};
+    {
+        const n = try reader.read(std.mem.asBytes(&header));
+        if (n != @sizeOf(Format.Header)) @panic("short read");
+    }
+    if (!std.mem.eql(u8, &header.magic, Format.magic)) return error.wrong_magic;
+    if (header.version != Format.version) return error.version;
+    return .{
+        .ndirs = header.get_ndirs(),
+        .nfiles = header.get_nfiles(),
+    };
 }
 
 fn cmd_unpack(archive_path: []const u8) !void {
@@ -67,16 +97,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
     var reader_buf: [io_buf_size]u8 = undefined;
     var reader = archive.reader(&reader_buf);
 
-    // read top-level header
-    var header = Format.Header{};
-    {
-        const n = try reader.read(std.mem.asBytes(&header));
-        if (n != @sizeOf(Format.Header)) @panic("short read");
-    }
-    if (!std.mem.eql(u8, &header.magic, Format.magic)) return error.wrong_magic;
-    if (header.version != Format.version) return error.version;
-    const ndirs = header.get_ndirs();
-    const nfiles = header.get_nfiles();
+    const top = try parseTopLevelHeader(&reader);
 
     // create output directory
     const out_dir_path = std.fs.path.stem(archive_path);
@@ -85,7 +106,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
     defer out_dir.close();
 
     // read directories
-    for (0..ndirs) |_| {
+    for (0..top.ndirs) |_| {
         var h = Format.DirHeader{};
         {
             const n = try reader.read(std.mem.asBytes(&h));
@@ -107,7 +128,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
 
     // read files
     var writer_buf: [io_buf_size]u8 = undefined;
-    for (0..nfiles) |_| {
+    for (0..top.nfiles) |_| {
         var h = Format.FileHeader{};
         {
             const n = try reader.read(std.mem.asBytes(&h));

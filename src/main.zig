@@ -224,7 +224,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }
 
         const end = timer.read();
-        std.debug.print("walk {D}\n", .{end - begin});
+        std.debug.print("walk dir {D}\n", .{end - begin});
     }
 
     // sort
@@ -241,7 +241,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         std.sort.block(Item, files.items, {}, cmp);
 
         const end = timer.read();
-        std.debug.print("sort {D}\n", .{end - begin});
+        std.debug.print("sort paths {D}\n", .{end - begin});
     }
 
     // write the archive
@@ -257,23 +257,35 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
         // write dirs and files
         {
-            var timer = try std.time.Timer.start();
-            const begin = timer.read();
-
             var w = Format.Writer{
                 .out = out,
             };
-            try w.begin(dirs.items.len, files.items.len);
-            for (dirs.items) |item| {
-                try w.append_dir(item);
-            }
-            for (files.items) |item| {
-                try w.append_file(dir, item);
-            }
-            try w.end();
 
-            const end = timer.read();
-            std.debug.print("write {D}\n", .{end - begin});
+            try w.begin(dirs.items.len, files.items.len);
+
+            // write dirs
+            {
+                var timer = try std.time.Timer.start();
+                const begin = timer.read();
+                for (dirs.items) |item| {
+                    try w.append_dir(item);
+                }
+                const end = timer.read();
+                std.debug.print("write dirs {D}\n", .{end - begin});
+            }
+
+            // write files
+            {
+                var timer = try std.time.Timer.start();
+                const begin = timer.read();
+                for (files.items) |item| {
+                    try w.append_file(dir, item);
+                }
+                const end = timer.read();
+                std.debug.print("write files {D}\n", .{end - begin});
+            }
+
+            try w.end();
         }
 
         // sync to disk
@@ -284,9 +296,11 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
             try out_file.sync();
 
             const end = timer.read();
-            std.debug.print("sync {D}\n", .{end - begin});
+            std.debug.print("sync file {D}\n", .{end - begin});
         }
     }
+
+    // TODO: idea: write archive in parts, one thread for each?!
 }
 
 const Item = struct {

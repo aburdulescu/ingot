@@ -112,10 +112,10 @@ fn parse_dir(reader: *std.fs.File.Reader, path_buf: []u8) ![]const u8 {
 }
 
 fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64 } {
-    var header = Format.Header{};
+    var header = Format.TopHeader{};
     {
         const n = try reader.read(std.mem.asBytes(&header));
-        if (n != @sizeOf(Format.Header)) @panic("short read");
+        if (n != @sizeOf(Format.TopHeader)) @panic("short read");
     }
     if (!std.mem.eql(u8, &header.magic, Format.magic)) return error.wrong_magic;
     if (header.version != Format.version) return error.version;
@@ -260,18 +260,18 @@ const Format = struct {
     const magic = "ingot";
 
     comptime {
-        assert(@alignOf(Header) == 1);
+        assert(@alignOf(TopHeader) == 1);
         assert(@alignOf(DirHeader) == 1);
         assert(@alignOf(FileHeader) == 1);
     }
 
-    const Header = struct {
+    const TopHeader = struct {
         magic: [5]u8 = .{0} ** 5,
         version: u8 = 0,
         ndirs: [8]u8 = .{0} ** 8,
         nfiles: [8]u8 = .{0} ** 8,
 
-        fn write(self: *Header, ndirs: usize, nfiles: usize) void {
+        fn write(self: *TopHeader, ndirs: usize, nfiles: usize) void {
             @memcpy(&self.magic, magic);
             self.version = version;
 
@@ -282,12 +282,12 @@ const Format = struct {
             std.mem.writeInt(u64, &self.nfiles, nfiles64, .big);
         }
 
-        fn get_ndirs(self: *const Header) u64 {
+        fn get_ndirs(self: *const TopHeader) u64 {
             const v = std.mem.readInt(u64, &self.ndirs, .big);
             return v;
         }
 
-        fn get_nfiles(self: *const Header) u64 {
+        fn get_nfiles(self: *const TopHeader) u64 {
             const v = std.mem.readInt(u64, &self.nfiles, .big);
             return v;
         }
@@ -335,7 +335,7 @@ const Format = struct {
         reader_buf: [io_buf_size]u8 = undefined,
 
         fn begin(self: *Writer, ndirs: usize, nfiles: usize) !void {
-            var hdr = Header{};
+            var hdr = TopHeader{};
             hdr.write(ndirs, nfiles);
             try self.out.writeAll(std.mem.asBytes(&hdr));
         }

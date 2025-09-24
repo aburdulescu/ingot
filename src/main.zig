@@ -188,8 +188,8 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var dirs = try std.ArrayList(Item).initCapacity(allocator, 100);
-    var files = try std.ArrayList(Item).initCapacity(allocator, 100);
+    var dirs = try std.ArrayList(Item).initCapacity(allocator, 1024);
+    var files = try std.ArrayList(Item).initCapacity(allocator, 1024);
 
     // recursively traverse the input directory and collect file and dir paths
     {
@@ -244,34 +244,48 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         std.debug.print("sort {D}\n", .{end - begin});
     }
 
-    const out_path = try std.mem.concat(allocator, u8, &[_][]const u8{ std.fs.path.basename(dir_path), "." ++ Format.magic });
-
-    var out_file = try std.fs.cwd().createFile(out_path, .{});
-    defer out_file.close();
-
-    var out_buf: [io_buf_size]u8 = undefined;
-    var out_writer = out_file.writer(&out_buf);
-    const out = &out_writer.interface;
-
     // write the archive
     {
-        var timer = try std.time.Timer.start();
-        const begin = timer.read();
+        const out_path = try std.mem.concat(allocator, u8, &[_][]const u8{ std.fs.path.basename(dir_path), "." ++ Format.magic });
 
-        var w = Format.Writer{
-            .out = out,
-        };
-        try w.begin(dirs.items.len, files.items.len);
-        for (dirs.items) |item| {
-            try w.append_dir(item);
-        }
-        for (files.items) |item| {
-            try w.append_file(dir, item);
-        }
-        try w.end();
+        var out_file = try std.fs.cwd().createFile(out_path, .{});
+        defer out_file.close();
 
-        const end = timer.read();
-        std.debug.print("write {D}\n", .{end - begin});
+        var out_buf: [io_buf_size]u8 = undefined;
+        var out_writer = out_file.writer(&out_buf);
+        const out = &out_writer.interface;
+
+        // write dirs and files
+        {
+            var timer = try std.time.Timer.start();
+            const begin = timer.read();
+
+            var w = Format.Writer{
+                .out = out,
+            };
+            try w.begin(dirs.items.len, files.items.len);
+            for (dirs.items) |item| {
+                try w.append_dir(item);
+            }
+            for (files.items) |item| {
+                try w.append_file(dir, item);
+            }
+            try w.end();
+
+            const end = timer.read();
+            std.debug.print("write {D}\n", .{end - begin});
+        }
+
+        // sync to disk
+        {
+            var timer = try std.time.Timer.start();
+            const begin = timer.read();
+
+            try out_file.sync();
+
+            const end = timer.read();
+            std.debug.print("sync {D}\n", .{end - begin});
+        }
     }
 }
 

@@ -11,6 +11,13 @@ const usage =
 ;
 
 pub fn main() !u8 {
+    var timer = try std.time.Timer.start();
+    const begin = timer.read();
+    defer {
+        const end = timer.read();
+        std.debug.print("total {D}\n", .{end - begin});
+    }
+
     var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = gpa_instance.allocator();
 
@@ -28,11 +35,7 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
-        var timer = try std.time.Timer.start();
-        const begin = timer.read();
         try cmd_pack(gpa, argv[2]);
-        const end = timer.read();
-        std.debug.print("total {D}\n", .{end - begin});
     } else if (std.mem.eql(u8, cmd, "unpack")) {
         if (argv.len < 3) {
             std.debug.print("error: need one argument -> file not provided\n", .{});
@@ -196,6 +199,10 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     // recursively traverse the input directory and collect file and dir paths
     {
         const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("walk dir {D}\n", .{end - begin});
+        }
 
         var walker = try dir.walk(allocator);
         defer walker.deinit();
@@ -223,14 +230,15 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 else => continue,
             }
         }
-
-        const end = timer.read();
-        std.debug.print("walk dir {D}\n", .{end - begin});
     }
 
     // sort
     {
         const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("sort paths {D}\n", .{end - begin});
+        }
 
         const cmp = struct {
             pub fn lessThan(_: void, a: Item, b: Item) bool {
@@ -239,9 +247,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }.lessThan;
         std.sort.block(Item, dirs.items, {}, cmp);
         std.sort.block(Item, files.items, {}, cmp);
-
-        const end = timer.read();
-        std.debug.print("sort paths {D}\n", .{end - begin});
     }
 
     // write the archive
@@ -266,21 +271,26 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
             // write dirs
             {
                 const begin = timer.read();
+                defer {
+                    const end = timer.read();
+                    std.debug.print("write dirs {D}\n", .{end - begin});
+                }
+
                 for (dirs.items) |item| {
                     try w.append_dir(item);
                 }
-                const end = timer.read();
-                std.debug.print("write dirs {D}\n", .{end - begin});
             }
 
             // write files
             {
                 const begin = timer.read();
+                defer {
+                    const end = timer.read();
+                    std.debug.print("write files {D} (stat was {D})\n", .{ end - begin, w.stat_time });
+                }
                 for (files.items) |item| {
                     try w.append_file(dir, item, &timer);
                 }
-                const end = timer.read();
-                std.debug.print("write files {D} (stat was {D})\n", .{end - begin, w.stat_time});
             }
 
             try w.end();
@@ -289,11 +299,12 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         // sync to disk
         {
             const begin = timer.read();
+            defer {
+                const end = timer.read();
+                std.debug.print("sync file {D}\n", .{end - begin});
+            }
 
             try out_file.sync();
-
-            const end = timer.read();
-            std.debug.print("sync file {D}\n", .{end - begin});
         }
     }
 

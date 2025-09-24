@@ -185,6 +185,8 @@ fn cmd_unpack(archive_path: []const u8) !void {
 }
 
 fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
+    var timer = try std.time.Timer.start();
+
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
@@ -193,7 +195,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     // recursively traverse the input directory and collect file and dir paths
     {
-        var timer = try std.time.Timer.start();
         const begin = timer.read();
 
         var walker = try dir.walk(allocator);
@@ -229,7 +230,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     // sort
     {
-        var timer = try std.time.Timer.start();
         const begin = timer.read();
 
         const cmp = struct {
@@ -265,7 +265,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
             // write dirs
             {
-                var timer = try std.time.Timer.start();
                 const begin = timer.read();
                 for (dirs.items) |item| {
                     try w.append_dir(item);
@@ -276,13 +275,12 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
             // write files
             {
-                var timer = try std.time.Timer.start();
                 const begin = timer.read();
                 for (files.items) |item| {
-                    try w.append_file(dir, item);
+                    try w.append_file(dir, item, &timer);
                 }
                 const end = timer.read();
-                std.debug.print("write files {D}\n", .{end - begin});
+                std.debug.print("write files {D} (stat was {D})\n", .{end - begin, w.stat_time});
             }
 
             try w.end();
@@ -290,7 +288,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
         // sync to disk
         {
-            var timer = try std.time.Timer.start();
             const begin = timer.read();
 
             try out_file.sync();
@@ -300,6 +297,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }
     }
 
+    // TODO: avoid the file stat (if possible)? maybe write custom walker?
     // TODO: idea: write archive in parts, one thread for each?!
 }
 
@@ -385,6 +383,7 @@ const Format = struct {
     const Writer = struct {
         out: *std.Io.Writer = undefined,
         reader_buf: [io_buf_size]u8 = undefined,
+        stat_time: u64 = 0,
 
         fn begin(self: *Writer, ndirs: usize, nfiles: usize) !void {
             var hdr = TopHeader{};
@@ -403,11 +402,14 @@ const Format = struct {
             try self.out.writeAll(item.path);
         }
 
-        fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+        fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item, timer: *std.time.Timer) !void {
             const file = try base_dir.openFile(item.path, .{});
             defer file.close();
 
+            const b = timer.read();
             const stat = try file.stat();
+            const e = timer.read();
+            self.stat_time += e - b;
 
             var hdr = FileHeader{};
             hdr.write(item.path.len, stat.size);

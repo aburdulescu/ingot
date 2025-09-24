@@ -28,7 +28,11 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
+        var timer = try std.time.Timer.start();
+        const begin = timer.read();
         try cmd_pack(gpa, argv[2]);
+        const end = timer.read();
+        std.debug.print("total {D}\n", .{end - begin});
     } else if (std.mem.eql(u8, cmd, "unpack")) {
         if (argv.len < 3) {
             std.debug.print("error: need one argument -> file not provided\n", .{});
@@ -189,6 +193,9 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     // recursively traverse the input directory and collect file and dir paths
     {
+        var timer = try std.time.Timer.start();
+        const begin = timer.read();
+
         var walker = try dir.walk(allocator);
         defer walker.deinit();
 
@@ -215,10 +222,16 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 else => continue,
             }
         }
+
+        const end = timer.read();
+        std.debug.print("walk {D}\n", .{end - begin});
     }
 
     // sort
     {
+        var timer = try std.time.Timer.start();
+        const begin = timer.read();
+
         const cmp = struct {
             pub fn lessThan(_: void, a: Item, b: Item) bool {
                 return std.mem.lessThan(u8, a.path, b.path);
@@ -226,6 +239,9 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }.lessThan;
         std.sort.block(Item, dirs.items, {}, cmp);
         std.sort.block(Item, files.items, {}, cmp);
+
+        const end = timer.read();
+        std.debug.print("sort {D}\n", .{end - begin});
     }
 
     const out_path = try std.mem.concat(allocator, u8, &[_][]const u8{ std.fs.path.basename(dir_path), "." ++ Format.magic });
@@ -238,17 +254,25 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     const out = &out_writer.interface;
 
     // write the archive
-    var w = Format.Writer{
-        .out = out,
-    };
-    try w.begin(dirs.items.len, files.items.len);
-    for (dirs.items) |item| {
-        try w.append_dir(item);
+    {
+        var timer = try std.time.Timer.start();
+        const begin = timer.read();
+
+        var w = Format.Writer{
+            .out = out,
+        };
+        try w.begin(dirs.items.len, files.items.len);
+        for (dirs.items) |item| {
+            try w.append_dir(item);
+        }
+        for (files.items) |item| {
+            try w.append_file(dir, item);
+        }
+        try w.end();
+
+        const end = timer.read();
+        std.debug.print("write {D}\n", .{end - begin});
     }
-    for (files.items) |item| {
-        try w.append_file(dir, item);
-    }
-    try w.end();
 }
 
 const Item = struct {

@@ -133,6 +133,8 @@ fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u
 }
 
 fn cmd_unpack(archive_path: []const u8) !void {
+    var timer = try std.time.Timer.start();
+
     const archive = try std.fs.cwd().openFile(archive_path, .{});
     defer archive.close();
 
@@ -148,42 +150,58 @@ fn cmd_unpack(archive_path: []const u8) !void {
     defer out_dir.close();
 
     // read directories
-    for (0..top.ndirs) |_| {
+    {
+        const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("unpack dirs {D}\n", .{end - begin});
+        }
+
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = try parse_dir(&reader, &path_buf);
-        out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
+        for (0..top.ndirs) |_| {
+            const path = try parse_dir(&reader, &path_buf);
+            out_dir.makeDir(path) catch |err| if (err != error.PathAlreadyExists) return err;
+        }
     }
 
     // read files
-    var writer_buf: [io_buf_size]u8 = undefined;
-    for (0..top.nfiles) |_| {
-        var h = Format.FileHeader{};
-        {
-            const n = try reader.read(std.mem.asBytes(&h));
-            if (n != @sizeOf(Format.FileHeader)) @panic("short read");
+    {
+        const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("unpack files {D}\n", .{end - begin});
         }
 
-        const path_size = h.get_path_size();
-        const file_size = h.get_file_size();
-        if (path_size > std.fs.max_path_bytes) @panic("path too big");
-
+        var writer_buf: [io_buf_size]u8 = undefined;
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        {
-            const n = try reader.read(path_buf[0..path_size]);
-            if (n != path_size) @panic("short read");
+        for (0..top.nfiles) |_| {
+            var h = Format.FileHeader{};
+            {
+                const n = try reader.read(std.mem.asBytes(&h));
+                if (n != @sizeOf(Format.FileHeader)) @panic("short read");
+            }
+
+            const path_size = h.get_path_size();
+            const file_size = h.get_file_size();
+            if (path_size > std.fs.max_path_bytes) @panic("path too big");
+
+            {
+                const n = try reader.read(path_buf[0..path_size]);
+                if (n != path_size) @panic("short read");
+            }
+            const path = path_buf[0..path_size];
+
+            var file = try out_dir.createFile(path, .{});
+            defer file.close();
+
+            var writer = file.writer(&writer_buf);
+            var writer_if = &writer.interface;
+
+            const n = try writer_if.sendFileAll(&reader, .limited64(file_size));
+            assert(n == file_size);
+
+            try writer_if.flush();
         }
-        const path = path_buf[0..path_size];
-
-        var file = try out_dir.createFile(path, .{});
-        defer file.close();
-
-        var writer = file.writer(&writer_buf);
-        var writer_if = &writer.interface;
-
-        const n = try writer_if.sendFileAll(&reader, .limited64(file_size));
-        assert(n == file_size);
-
-        try writer_if.flush();
     }
 }
 
@@ -273,7 +291,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 const begin = timer.read();
                 defer {
                     const end = timer.read();
-                    std.debug.print("write dirs {D}\n", .{end - begin});
+                    std.debug.print("pack dirs {D}\n", .{end - begin});
                 }
 
                 for (dirs.items) |item| {
@@ -286,7 +304,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 const begin = timer.read();
                 defer {
                     const end = timer.read();
-                    std.debug.print("write files {D}\n", .{ end - begin });
+                    std.debug.print("pack files {D}\n", .{end - begin});
                 }
                 for (files.items) |item| {
                     try w.append_file(dir, item);

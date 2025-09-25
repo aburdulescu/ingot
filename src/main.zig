@@ -286,10 +286,10 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 const begin = timer.read();
                 defer {
                     const end = timer.read();
-                    std.debug.print("write files {D} (stat was {D})\n", .{ end - begin, w.stat_time });
+                    std.debug.print("write files {D}\n", .{ end - begin });
                 }
                 for (files.items) |item| {
-                    try w.append_file(dir, item, &timer);
+                    try w.append_file(dir, item);
                 }
             }
 
@@ -394,7 +394,6 @@ const Format = struct {
     const Writer = struct {
         out: *std.Io.Writer = undefined,
         reader_buf: [io_buf_size]u8 = undefined,
-        stat_time: u64 = 0,
 
         fn begin(self: *Writer, ndirs: usize, nfiles: usize) !void {
             var hdr = TopHeader{};
@@ -413,14 +412,11 @@ const Format = struct {
             try self.out.writeAll(item.path);
         }
 
-        fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item, timer: *std.time.Timer) !void {
+        fn append_file(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
             const file = try base_dir.openFile(item.path, .{});
             defer file.close();
 
-            const b = timer.read();
             const stat = try file.stat();
-            const e = timer.read();
-            self.stat_time += e - b;
 
             var hdr = FileHeader{};
             hdr.write(item.path.len, stat.size);

@@ -59,8 +59,6 @@ pub fn main() !u8 {
     return 0;
 }
 
-// TODO: add progress bars for pack and unpack
-
 const io_buf_size = 256 * 1024;
 
 fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
@@ -96,7 +94,7 @@ fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
         }
     }
 
-    // TODO: files
+    // TODO: compare files
 }
 
 fn parse_dir(reader: *std.fs.File.Reader, path_buf: []u8) ![]const u8 {
@@ -226,7 +224,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         defer walker.deinit();
 
         // TODO: how to avoid dupe and reduce allocs?
-        // TODO: normalize(remove redundant . or .., collapse double slashes, etc.) and validate path, right now only replacing \ with /
 
         while (try walker.next()) |entry| {
             switch (entry.kind) {
@@ -244,7 +241,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                         .path = path,
                     });
                 },
-                // TODO: handle symlinks?
                 else => continue,
             }
         }
@@ -325,9 +321,6 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
             try out_file.sync();
         }
     }
-
-    // TODO: avoid the file stat (if possible)? maybe write custom walker?
-    // TODO: idea: write archive in parts, one thread for each?!
 }
 
 const Item = struct {

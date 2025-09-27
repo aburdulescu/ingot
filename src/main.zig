@@ -95,6 +95,7 @@ fn cmd_diff(left_path: []const u8, right_path: []const u8) !void {
     }
 
     // TODO: compare files
+    // TODO: compare symlinks
 }
 
 fn parse_dir(reader: *std.fs.File.Reader, path_buf: []u8) ![]const u8 {
@@ -116,7 +117,7 @@ fn parse_dir(reader: *std.fs.File.Reader, path_buf: []u8) ![]const u8 {
     return path_buf[0..path_size];
 }
 
-fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64 } {
+fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u64, nsymlinks: u64 } {
     var header = Format.TopHeader{};
     {
         const n = try reader.read(std.mem.asBytes(&header));
@@ -127,6 +128,7 @@ fn parse_top_header(reader: *std.fs.File.Reader) !struct { ndirs: u64, nfiles: u
     return .{
         .ndirs = header.get_ndirs(),
         .nfiles = header.get_nfiles(),
+        .nsymlinks = header.get_nsymlinks(),
     };
 }
 
@@ -179,6 +181,7 @@ fn cmd_unpack(archive_path: []const u8) !void {
                 if (n != @sizeOf(Format.FileHeader)) @panic("short read");
             }
 
+            const mode = h.get_mode();
             const path_size = h.get_path_size();
             const file_size = h.get_file_size();
             if (path_size > std.fs.max_path_bytes) @panic("path too big");
@@ -189,7 +192,9 @@ fn cmd_unpack(archive_path: []const u8) !void {
             }
             const path = path_buf[0..path_size];
 
-            var file = try out_dir.createFile(path, .{});
+            var file = try out_dir.createFile(path, .{
+                .mode = if (mode == 0) std.fs.File.default_mode else mode,
+            });
             defer file.close();
 
             var writer = file.writer(&writer_buf);
@@ -199,6 +204,46 @@ fn cmd_unpack(archive_path: []const u8) !void {
             assert(n == file_size);
 
             try writer_if.flush();
+        }
+    }
+
+    // read symlinks
+    {
+        const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("unpack symlinks {D}\n", .{end - begin});
+        }
+
+        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        for (0..top.nsymlinks) |_| {
+            var h = Format.SymlinkHeader{};
+            {
+                const n = try reader.read(std.mem.asBytes(&h));
+                if (n != @sizeOf(Format.SymlinkHeader)) @panic("short read");
+            }
+
+            const link_size = h.get_link_size();
+            const target_size = h.get_target_size();
+            if (link_size > std.fs.max_path_bytes) @panic("path too big");
+            if (target_size > std.fs.max_path_bytes) @panic("path too big");
+
+            {
+                const n = try reader.read(link_buf[0..link_size]);
+                if (n != link_size) @panic("short read");
+            }
+            const link = link_buf[0..link_size];
+
+            {
+                const n = try reader.read(target_buf[0..target_size]);
+                if (n != target_size) @panic("short read");
+            }
+            const target = target_buf[0..target_size];
+
+            try out_dir.symLink(target, link, .{
+                // TODO: handle .is_directory for windows
+            });
         }
     }
 }
@@ -211,6 +256,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
 
     var dirs = try std.ArrayList(Item).initCapacity(allocator, 1024);
     var files = try std.ArrayList(Item).initCapacity(allocator, 1024);
+    var symlinks = try std.ArrayList(Item).initCapacity(allocator, 1024);
 
     // recursively traverse the input directory and collect file and dir paths
     {
@@ -241,6 +287,12 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                         .path = path,
                     });
                 },
+                .sym_link => {
+                    const path = try allocator.dupe(u8, entry.path);
+                    try symlinks.append(allocator, Item{
+                        .path = path,
+                    });
+                },
                 else => continue,
             }
         }
@@ -261,6 +313,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         }.lessThan;
         std.sort.block(Item, dirs.items, {}, cmp);
         std.sort.block(Item, files.items, {}, cmp);
+        std.sort.block(Item, symlinks.items, {}, cmp);
     }
 
     // write the archive
@@ -280,7 +333,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 .out = out,
             };
 
-            try w.begin(dirs.items.len, files.items.len);
+            try w.begin(dirs.items.len, files.items.len, symlinks.items.len);
 
             // write dirs
             {
@@ -304,6 +357,18 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
                 }
                 for (files.items) |item| {
                     try w.append_file(dir, item);
+                }
+            }
+
+            // write symlinks
+            {
+                const begin = timer.read();
+                defer {
+                    const end = timer.read();
+                    std.debug.print("pack symlinks {D}\n", .{end - begin});
+                }
+                for (symlinks.items) |item| {
+                    try w.append_symlink(dir, item);
                 }
             }
 
@@ -337,15 +402,14 @@ const Format = struct {
         assert(@alignOf(FileHeader) == 1);
     }
 
-    // TODO: on POSIX, preserve symlinks and permissions
-
     const TopHeader = struct {
         magic: [5]u8 = .{0} ** 5,
         version: u8 = 0,
         ndirs: [8]u8 = .{0} ** 8,
         nfiles: [8]u8 = .{0} ** 8,
+        nsymlinks: [8]u8 = .{0} ** 8,
 
-        fn write(self: *TopHeader, ndirs: usize, nfiles: usize) void {
+        fn write(self: *TopHeader, ndirs: usize, nfiles: usize, nsymlinks: usize) void {
             @memcpy(&self.magic, magic);
             self.version = version;
 
@@ -354,6 +418,9 @@ const Format = struct {
 
             const nfiles64: u64 = @intCast(nfiles);
             std.mem.writeInt(u64, &self.nfiles, nfiles64, .big);
+
+            const nsymlinks64: u64 = @intCast(nsymlinks);
+            std.mem.writeInt(u64, &self.nsymlinks, nsymlinks64, .big);
         }
 
         fn get_ndirs(self: *const TopHeader) u64 {
@@ -363,6 +430,11 @@ const Format = struct {
 
         fn get_nfiles(self: *const TopHeader) u64 {
             const v = std.mem.readInt(u64, &self.nfiles, .big);
+            return v;
+        }
+
+        fn get_nsymlinks(self: *const TopHeader) u64 {
+            const v = std.mem.readInt(u64, &self.nsymlinks, .big);
             return v;
         }
     };
@@ -381,16 +453,48 @@ const Format = struct {
         }
     };
 
+    const SymlinkHeader = struct {
+        link_size: [4]u8 = .{0} ** 4,
+        target_size: [4]u8 = .{0} ** 4,
+
+        fn write(self: *SymlinkHeader, link_len: usize, target_len: usize) void {
+            const link_size: u32 = @intCast(link_len);
+            std.mem.writeInt(u32, &self.link_size, link_size, .big);
+
+            const target_size: u32 = @intCast(target_len);
+            std.mem.writeInt(u32, &self.target_size, target_size, .big);
+        }
+
+        fn get_link_size(self: *const SymlinkHeader) u32 {
+            const v = std.mem.readInt(u32, &self.link_size, .big);
+            return v;
+        }
+
+        fn get_target_size(self: *const SymlinkHeader) u32 {
+            const v = std.mem.readInt(u32, &self.target_size, .big);
+            return v;
+        }
+    };
+
     const FileHeader = struct {
+        mode: [4]u8 = .{0} ** 4,
         path_size: [4]u8 = .{0} ** 4,
         file_size: [8]u8 = .{0} ** 8,
 
-        fn write(self: *FileHeader, path_len: usize, file_len: usize) void {
+        fn write(self: *FileHeader, mode: std.fs.File.Mode, path_len: usize, file_len: usize) void {
+            const mode32: u32 = @intCast(mode);
+            std.mem.writeInt(u32, &self.mode, mode32, .big);
+
             const path_size: u32 = @intCast(path_len);
             std.mem.writeInt(u32, &self.path_size, path_size, .big);
 
             const file_size: u64 = @intCast(file_len);
             std.mem.writeInt(u64, &self.file_size, file_size, .big);
+        }
+
+        fn get_mode(self: *const FileHeader) std.fs.File.Mode {
+            const v: std.fs.File.Mode = @intCast(std.mem.readInt(u32, &self.mode, .big));
+            return v;
         }
 
         fn get_path_size(self: *const FileHeader) u32 {
@@ -408,9 +512,9 @@ const Format = struct {
         out: *std.Io.Writer = undefined,
         reader_buf: [io_buf_size]u8 = undefined,
 
-        fn begin(self: *Writer, ndirs: usize, nfiles: usize) !void {
+        fn begin(self: *Writer, ndirs: usize, nfiles: usize, nsymlinks: usize) !void {
             var hdr = TopHeader{};
-            hdr.write(ndirs, nfiles);
+            hdr.write(ndirs, nfiles, nsymlinks);
             try self.out.writeAll(std.mem.asBytes(&hdr));
         }
 
@@ -432,13 +536,25 @@ const Format = struct {
             const stat = try file.stat();
 
             var hdr = FileHeader{};
-            hdr.write(item.path.len, stat.size);
+            hdr.write(stat.mode, item.path.len, stat.size);
 
             try self.out.writeAll(std.mem.asBytes(&hdr));
             try self.out.writeAll(item.path);
 
             var reader = file.reader(&self.reader_buf);
             _ = try self.out.sendFileAll(&reader, .unlimited);
+        }
+
+        fn append_symlink(self: *Writer, base_dir: std.fs.Dir, item: Item) !void {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const target = try base_dir.readLink(item.path, &buf);
+
+            var hdr = SymlinkHeader{};
+            hdr.write(item.path.len, target.len);
+
+            try self.out.writeAll(std.mem.asBytes(&hdr));
+            try self.out.writeAll(item.path);
+            try self.out.writeAll(target);
         }
     };
 };

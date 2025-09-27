@@ -337,6 +337,8 @@ const Format = struct {
         assert(@alignOf(FileHeader) == 1);
     }
 
+    // TODO: on POSIX, preserve symlinks and permissions
+
     const TopHeader = struct {
         magic: [5]u8 = .{0} ** 5,
         version: u8 = 0,

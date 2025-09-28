@@ -1,6 +1,15 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
+    comptime {
+        const need = std.SemanticVersion{ .major = 0, .minor = 15, .patch = 1 };
+        const have = builtin.zig_version;
+        if (need.order(have) != .eq) {
+            @compileError(std.fmt.comptimePrint("unsupported zig version: need {f}, have {f}", .{ need, have }));
+        }
+    }
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 

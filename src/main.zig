@@ -18,10 +18,10 @@ pub fn main() !u8 {
         std.debug.print("total {D}\n", .{end - begin});
     }
 
-    var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
-    const gpa = gpa_instance.allocator();
+    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena = arena_instance.allocator();
 
-    const argv = try std.process.argsAlloc(gpa);
+    const argv = try std.process.argsAlloc(arena);
 
     if (argv.len < 2) {
         std.debug.print(usage, .{});
@@ -35,7 +35,7 @@ pub fn main() !u8 {
             std.debug.print(usage, .{});
             return 1;
         }
-        try cmd_pack(gpa, argv[2]);
+        try cmd_pack(arena, argv[2]);
     } else if (std.mem.eql(u8, cmd, "unpack")) {
         if (argv.len < 3) {
             std.debug.print("error: need one argument -> file not provided\n", .{});
@@ -254,9 +254,32 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var dirs = try std.ArrayList(Item).initCapacity(allocator, 1024);
-    var files = try std.ArrayList(Item).initCapacity(allocator, 1024);
-    var symlinks = try std.ArrayList(Item).initCapacity(allocator, 1024);
+    var ndirs: usize = 0;
+    var nfiles: usize = 0;
+    var nsymlinks: usize = 0;
+
+    // pre-walk dir for precise memory alloc
+    {
+        const begin = timer.read();
+        defer {
+            const end = timer.read();
+            std.debug.print("walk dir {D}\n", .{end - begin});
+        }
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+        while (try walker.next()) |entry| {
+            switch (entry.kind) {
+                .file => nfiles += 1,
+                .directory => ndirs += 1,
+                .sym_link => nsymlinks += 1,
+                else => continue,
+            }
+        }
+    }
+
+    var dirs = try std.ArrayList(Item).initCapacity(allocator, ndirs);
+    var files = try std.ArrayList(Item).initCapacity(allocator, nfiles);
+    var symlinks = try std.ArrayList(Item).initCapacity(allocator, nsymlinks);
 
     // recursively traverse the input directory and collect file and dir paths
     {

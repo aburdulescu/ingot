@@ -7,8 +7,3 @@ zig
 *.ingot
 
 cg.*
-
-*.perf
-*.ruse
-
-*.tar

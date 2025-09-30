@@ -1,3 +1,6 @@
+* performance
+- read files chunks in parallel and write them in order (N readers, 1 writer, one queue between them)
+
 * tests
 - tbd
 

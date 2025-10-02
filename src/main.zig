@@ -263,7 +263,7 @@ fn cmd_pack(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         const begin = timer.read();
         defer {
             const end = timer.read();
-            std.debug.print("walk dir {D}\n", .{end - begin});
+            std.debug.print("count paths {D}\n", .{end - begin});
         }
         var walker = try dir.walk(allocator);
         defer walker.deinit();
